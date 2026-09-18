@@ -16,6 +16,8 @@ async fn main() -> Result<()> {
         .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("jev_discord_bot=info,tower_http=info")))
         .with(fmt::layer().json())
         .init();
+    // Before anything opens TLS (Postgres, Redis, Jev, the gateway).
+    let _ = rustls::crypto::ring::default_provider().install_default();
     let role = std::env::args().nth(1).or_else(|| std::env::var("ROLE").ok()).unwrap_or_else(|| "all".into());
     if role == "migrate" {
         // Needs only the database. Neon's pooler breaks the session lock sqlx takes while

@@ -19,8 +19,6 @@ use crate::{
 };
 
 pub async fn run(state: AppState) -> Result<()> {
-    // The gateway's TLS needs a process-wide crypto provider.
-    let _ = rustls::crypto::ring::default_provider().install_default();
     let intents = Intents::GUILDS | Intents::GUILD_MESSAGES | Intents::MESSAGE_CONTENT;
     let mut shard = Shard::new(ShardId::ONE, state.config.discord.bot_token.clone(), intents);
     let wanted = EventTypeFlags::READY | EventTypeFlags::GUILD_CREATE | EventTypeFlags::GUILD_DELETE | EventTypeFlags::MESSAGE_CREATE | EventTypeFlags::INTERACTION_CREATE;
