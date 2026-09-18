@@ -17,16 +17,30 @@ const STREAM_MAX: usize = 100_000;
 
 #[derive(Clone)]
 pub struct Hot {
+    client: redis::Client,
     conn: ConnectionManager,
+}
+
+/// A worker's own connection for blocking queue reads. Redis answers a
+/// connection's commands in order, so a read that blocks for seconds must not
+/// share the connection everything else uses.
+pub struct QueueReader {
+    conn: redis::aio::MultiplexedConnection,
 }
 
 impl Hot {
     pub async fn connect(url: &str) -> Result<Self> {
         let client = redis::Client::open(url).context("REDIS_URL is not a Redis URL")?;
-        let conn = ConnectionManager::new(client).await.context("connect to Redis")?;
-        let hot = Self { conn };
+        let conn = ConnectionManager::new(client.clone()).await.context("connect to Redis")?;
+        let hot = Self { client, conn };
         hot.ensure_group().await?;
         Ok(hot)
+    }
+
+    pub async fn reader(&self) -> Result<QueueReader> {
+        let config = redis::AsyncConnectionConfig::new().set_response_timeout(None);
+        let conn = self.client.get_multiplexed_async_connection_with_config(&config).await.context("connect to Redis")?;
+        Ok(QueueReader { conn })
     }
 
     async fn ensure_group(&self) -> Result<()> {
@@ -47,26 +61,6 @@ impl Hot {
             let _: String = redis::cmd("XADD").arg(STREAM).arg("MAXLEN").arg("~").arg(STREAM_MAX).arg("*").arg("m").arg(payload).query_async(&mut conn).await?;
         }
         Ok(fresh)
-    }
-
-    /// Up to `count` queued messages for this worker: first any another worker
-    /// left unacknowledged for a minute, then new ones (waiting up to `block_ms`).
-    pub async fn next_batch(&self, consumer: &str, count: usize, block_ms: usize) -> Result<Vec<(String, String)>> {
-        let mut conn = self.conn.clone();
-        let claimed: redis::Value = redis::cmd("XAUTOCLAIM").arg(STREAM).arg(GROUP).arg(consumer).arg(60_000).arg("0-0").arg("COUNT").arg(count).query_async(&mut conn).await?;
-        let mut out = entries_from_autoclaim(claimed);
-        if out.is_empty() {
-            let options = StreamReadOptions::default().group(GROUP, consumer).count(count).block(block_ms);
-            let reply: redis::streams::StreamReadReply = conn.xread_options(&[STREAM], &[">"], &options).await?;
-            for key in reply.keys {
-                for entry in key.ids {
-                    if let Some(redis::Value::BulkString(bytes)) = entry.map.get("m") {
-                        out.push((entry.id.clone(), String::from_utf8_lossy(bytes).into_owned()));
-                    }
-                }
-            }
-        }
-        Ok(out)
     }
 
     pub async fn ack(&self, id: &str) -> Result<()> {
@@ -117,6 +111,28 @@ impl Hot {
     pub async fn ping(&self) -> bool {
         let mut conn = self.conn.clone();
         redis::cmd("PING").query_async::<String>(&mut conn).await.is_ok()
+    }
+}
+
+impl QueueReader {
+    /// Up to `count` queued messages for this worker: first any another worker
+    /// left unacknowledged for a minute, then new ones (waiting up to `block_ms`).
+    pub async fn next_batch(&mut self, consumer: &str, count: usize, block_ms: usize) -> Result<Vec<(String, String)>> {
+        let conn = &mut self.conn;
+        let claimed: redis::Value = redis::cmd("XAUTOCLAIM").arg(STREAM).arg(GROUP).arg(consumer).arg(60_000).arg("0-0").arg("COUNT").arg(count).query_async(conn).await?;
+        let mut out = entries_from_autoclaim(claimed);
+        if out.is_empty() {
+            let options = StreamReadOptions::default().group(GROUP, consumer).count(count).block(block_ms);
+            let reply: redis::streams::StreamReadReply = conn.xread_options(&[STREAM], &[">"], &options).await?;
+            for key in reply.keys {
+                for entry in key.ids {
+                    if let Some(redis::Value::BulkString(bytes)) = entry.map.get("m") {
+                        out.push((entry.id.clone(), String::from_utf8_lossy(bytes).into_owned()));
+                    }
+                }
+            }
+        }
+        Ok(out)
     }
 }
 

@@ -1,7 +1,7 @@
 # jev-discord-bot — plan
 
-2026-09-18. Status: **the moderation engine is built for one server (commit 00b8592);
-everything multi-tenant below is plan only.**
+2026-09-18. Status: **J0–J5 built and tested locally (Degen Guard, guard.degenbuilders.com);
+J6 billing and J7 custom rules not built; nothing deployed (J8).** See "What was built" at the end.
 
 A spam-moderation bot anyone can add to their Discord. Jev (TypeSafe's typed judgments) reads
 every message and decides whether it breaks the server's rules; confirmed offenders are warned,
@@ -115,14 +115,39 @@ move from environment variables to per-server rows.
 
 | | |
 |---|---|
-| **J0** | done: the engine for one server (rules, Jev, actions, Undo buttons, /jev) |
-| **J1** | multi-tenant schema: accounts, servers, rules, ladders, strikes with expiry, audit log; the engine reads per-server config |
-| **J2** | the ladder: warn / time-out / kick / ban per strike; "couldn't act"; strike expiry |
-| **J3** | website: Google sign-in, Discord install + ownership check, server settings |
-| **J4** | audit log pages, user history, review tab, undo from the web, CSV |
-| **J5** | Upstash: config cache, cooldowns, dedupe, quota counters, the gateway → worker queue |
-| **J6** | quotas and billing (Stripe) |
-| **J7** | custom plain-English rules |
-| **J8** | deploy (Railway + Neon + Upstash), Discord verification before 100 servers |
+| **J0** | done: the engine for one server |
+| **J1** | done: multi-tenant schema; the engine reads per-server settings |
+| **J2** | done: the ladder, "couldn't act", strike expiry |
+| **J3** | done: website with Google or Discord sign-in, Add to Discord with an ownership check, settings |
+| **J4** | done: audit log with filters, paging, review tab, user history, undo and take-action, CSV |
+| **J5** | done: Redis stream queue, settings cache, cooldowns, dedupe, monthly allowance (free tier, 2,000/server, operator can raise) |
+| **J6** | billing: **not needed yet** (the owner pays for Jev; allowances are set by the operator) |
+| **J7** | custom plain-English rules: not built |
+| **J8** | deploy: not started (see What was built) |
 
 Degen Builders' server becomes the first tenant.
+
+## What was built (2026-09-18)
+
+- **Name and home:** Degen Guard at guard.degenbuilders.com, its own Railway project (web,
+  gateway, worker from one image).
+- **Defaults chosen:** 2,000 judged messages per server per month (the operator raises it);
+  past it the bot keeps logging nothing new and tells the log channel once; warnings are a
+  channel notice that deletes itself after a minute; new servers start in watch mode.
+- **Sign-in:** Discord or Google. Only Discord can prove which servers you manage, so Google
+  accounts connect Discord before they see servers.
+- **Every judged message is one Jev call** (a kind choice and a lure yes/no, with the server's
+  own description of what's normal there).
+- **Tests:** 4 unit + 7 integration (pgtemp + a real `redis-server`, stand-ins for Jev and
+  Discord). Checked in the browser against the local stand-ins: sign-in, Add to Discord,
+  settings, enforce, messages through the real queue and worker, the audit log, take action,
+  375px layout.
+- **Found by running it, not by the tests:** the worker's blocking queue read shared the Redis
+  connection with everything else and timed out (and stalled other calls behind it). Workers now
+  read on their own connection; the test blocks longer than the old timeout.
+- **Never touched real:** Discord (OAuth, the gateway, slash commands, buttons, kicks and bans),
+  the real Jev API and how good its verdicts are, Google sign-in, Upstash, Neon, the Docker build.
+
+**To go live (J8):** a Discord application and bot (Message Content intent on), a new Railway
+project with the three services, a Neon database, an Upstash Redis, the Jev key, and DNS for
+guard.degenbuilders.com. Degen Builders' own server is the first to add it.

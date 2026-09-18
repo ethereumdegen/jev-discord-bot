@@ -137,12 +137,23 @@ async fn the_queue_delivers_each_message_once() {
     let payload = serde_json::to_string(&message("g1", "m1", "800", "free nitro https://x.example", &[], 1)).unwrap();
     assert!(s.hot.enqueue("m1", &payload).await.unwrap());
     assert!(!s.hot.enqueue("m1", &payload).await.unwrap(), "a resumed gateway's duplicate");
-    let batch = s.hot.next_batch("w1", 10, 100).await.unwrap();
+    let mut reader = s.hot.reader().await.unwrap();
+    // Block longer than the shared connection's timeout, as a real worker does.
+    let batch = reader.next_batch("w1", 10, 2_000).await.unwrap();
     assert_eq!(batch.len(), 1);
     worker::process(s, &batch[0].0, &batch[0].1).await.unwrap();
-    assert!(s.hot.next_batch("w1", 10, 100).await.unwrap().is_empty(), "acknowledged");
+    assert!(reader.next_batch("w1", 10, 100).await.unwrap().is_empty(), "acknowledged");
     let logged: i64 = sqlx::query_scalar("SELECT count(*) FROM actions").fetch_one(&s.pool).await.unwrap();
     assert_eq!(logged, 1);
+
+    // Retention: old rows and removed servers go, once an hour.
+    sqlx::query("UPDATE actions SET created_at=now()-interval '91 days'").execute(&s.pool).await.unwrap();
+    w.install("g2", "owner").await;
+    sqlx::query("UPDATE guilds SET removed_at=now()-interval '8 days' WHERE id='g2'").execute(&s.pool).await.unwrap();
+    assert!(worker::cleanup(s).await.unwrap());
+    assert!(!worker::cleanup(s).await.unwrap(), "not again within the hour");
+    let (actions, guilds): (i64, i64) = sqlx::query_as("SELECT (SELECT count(*) FROM actions),(SELECT count(*) FROM guilds)").fetch_one(&s.pool).await.unwrap();
+    assert_eq!((actions, guilds), (0, 1));
 }
 
 #[tokio::test]

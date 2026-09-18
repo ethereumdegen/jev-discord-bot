@@ -1,0 +1,9 @@
+# The Discord gateway: exactly ONE replica (one connection per shard). No HTTP port.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "/app/jevmod gateway"
+restartPolicyType = "ALWAYS"
+numReplicas = 1

@@ -1,0 +1,8 @@
+# Workers: judge queued messages. Add replicas when the queue backs up.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "/app/jevmod worker"
+restartPolicyType = "ALWAYS"

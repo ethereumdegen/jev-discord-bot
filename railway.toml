@@ -1,0 +1,11 @@
+# guard.degenbuilders.com — the site and API. Migrations run before each deploy.
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+preDeployCommand = "/app/jevmod migrate"
+startCommand = "/app/jevmod web"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 60
+restartPolicyType = "ON_FAILURE"

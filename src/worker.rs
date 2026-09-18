@@ -11,11 +11,26 @@ const BATCH: usize = 16;
 
 pub async fn run(state: AppState, consumer: String) -> Result<()> {
     tracing::info!(%consumer, "worker started");
+    let mut reader = None;
     loop {
-        let batch = match state.hot.next_batch(&consumer, BATCH, 5_000).await {
+        if let Err(error) = cleanup(&state).await {
+            tracing::warn!(?error, "cleanup failed");
+        }
+        if reader.is_none() {
+            match state.hot.reader().await {
+                Ok(r) => reader = Some(r),
+                Err(error) => {
+                    tracing::warn!(?error, "could not connect a queue reader");
+                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                    continue;
+                }
+            }
+        }
+        let batch = match reader.as_mut().expect("connected above").next_batch(&consumer, BATCH, 5_000).await {
             Ok(batch) => batch,
             Err(error) => {
-                tracing::warn!(?error, "could not read the queue");
+                tracing::warn!(?error, "could not read the queue; reconnecting");
+                reader = None;
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
                 continue;
             }
@@ -28,6 +43,26 @@ pub async fn run(state: AppState, consumer: String) -> Result<()> {
             let _ = task.await;
         }
     }
+}
+
+/// The retention promises on the site: flagged messages go after 90 days, a
+/// server the bot was removed from after 7, and stale sign-in rows. Once an
+/// hour, by whichever worker gets there first.
+pub async fn cleanup(state: &AppState) -> Result<bool> {
+    if !state.hot.first_in("jev:cleanup", 3600).await? {
+        return Ok(false);
+    }
+    for statement in [
+        "DELETE FROM actions WHERE created_at<now()-interval '90 days'",
+        "DELETE FROM strikes WHERE expires_at<now()-interval '90 days' OR cleared_at<now()-interval '90 days'",
+        "DELETE FROM guilds WHERE removed_at<now()-interval '7 days'",
+        "DELETE FROM sessions WHERE expires_at<now() OR revoked_at<now()-interval '1 day'",
+        "DELETE FROM oauth_attempts WHERE expires_at<now()-interval '1 day'",
+        "DELETE FROM magic_links WHERE expires_at<now()-interval '1 day'",
+    ] {
+        sqlx::query(statement).execute(&state.pool).await?;
+    }
+    Ok(true)
 }
 
 /// One queued message. Acknowledged unless it failed in a way worth retrying

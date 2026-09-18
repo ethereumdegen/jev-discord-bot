@@ -39,7 +39,12 @@ async fn main() -> Result<()> {
             tokio::spawn(worker::run(state.clone(), consumer));
             serve(state, bind).await
         }
-        other => bail!("unknown role {other}: use web, gateway, worker, migrate or all"),
+        // Web and worker without the gateway: for running against stand-ins.
+        "local" => {
+            tokio::spawn(worker::run(state.clone(), consumer));
+            serve(state, bind).await
+        }
+        other => bail!("unknown role {other}: use web, gateway, worker, migrate, all or local"),
     }
 }
 
