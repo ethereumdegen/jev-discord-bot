@@ -66,3 +66,7 @@ In the developer portal for the application:
 3. The bot asks for View Channels, Send Messages, Manage Messages, Read Message History, Kick,
    Ban and Moderate Members when it's added. Its role has to sit above the people it acts on;
    it can never act on the server owner or admins (those show as "couldn't act").
+
+## License
+
+MIT. See [LICENSE](LICENSE).

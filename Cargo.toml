@@ -4,6 +4,8 @@ version = "0.2.0"
 edition = "2024"
 rust-version = "1.91"
 publish = false
+license = "MIT"
+repository = "https://github.com/ethereumdegen/jev-discord-bot"
 description = "Jev Mod: a Discord spam bot any server can add. Jev (TypeSafe) judges messages; owners set a warn/kick/ban ladder and read an audit log."
 
 [lib]
