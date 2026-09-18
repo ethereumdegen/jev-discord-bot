@@ -75,11 +75,21 @@ async fn skips_exemptions_and_reports_what_it_couldnt_do() {
     w.install("g1", "owner").await;
     w.set("g1", "mode='enforce', exempt_role_ids='{r-mods}', exempt_channel_ids='{c-promo}'").await;
     let s = &w.state;
-    assert!(engine::handle_message(s, &message("g1", "m1", "owner", "free nitro", &[], 900)).await.unwrap().is_none(), "the owner");
-    assert!(engine::handle_message(s, &message("g1", "m2", "600", "free nitro", &["r-mods"], 1)).await.unwrap().is_none(), "an exempt role");
+    // Exempt people are judged and logged as "would", but nothing is done to them.
     let mut promo = message("g1", "m3", "601", "check out my server https://mine.example", &[], 1);
     promo.channel_id = "c-promo".into();
-    assert!(engine::handle_message(s, &promo).await.unwrap().is_none(), "an exempt channel");
+    for (m, why) in [
+        (message("g1", "m1", "owner", "free nitro", &[], 900), "the owner"),
+        (message("g1", "m2", "600", "free nitro", &["r-mods"], 1), "an exempt role"),
+        (promo, "an exempt channel"),
+    ] {
+        let id = engine::handle_message(s, &m).await.unwrap().unwrap_or_else(|| panic!("{why} is still logged"));
+        let (_, _, enforced, error) = w.outcome(id).await;
+        assert!(!enforced && error.is_none(), "{why}");
+        assert!(bodies(&w.discord, "DELETE", &format!("/messages/{}", m.message_id)).is_empty(), "{why}");
+    }
+    let strikes: i64 = sqlx::query_scalar("SELECT count(*) FROM strikes").fetch_one(&s.pool).await.unwrap();
+    assert_eq!(strikes, 0);
     // A regular's plain chat never reaches Jev, but their links do.
     sqlx::query("SELECT 1").execute(&s.pool).await.unwrap();
     for i in 0..25 {

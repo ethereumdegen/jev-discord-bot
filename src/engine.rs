@@ -39,9 +39,10 @@ pub async fn handle_message(state: &AppState, incoming: &Incoming) -> Result<Opt
     } else {
         None
     };
+    // Exempt people are still judged, so mods can see what the bot would
+    // have done; nothing is ever done to them.
     if let Some(why) = exempt {
-        tracing::info!(guild = %incoming.guild_id, why, "not judged");
-        return Ok(None);
+        tracing::info!(guild = %incoming.guild_id, why, "exempt: judged but never acted on");
     }
     let seen = state.hot.incr(&format!("jev:msgs:{}:{}", incoming.guild_id, incoming.author_id), 90 * 86_400).await?;
     let now = Utc::now();
@@ -72,7 +73,24 @@ pub async fn handle_message(state: &AppState, incoming: &Incoming) -> Result<Opt
     let (verdict, evaluation) = judge(&state.jev, incoming, context, now).await?;
     let record = Record { settings: &settings, incoming, channel: &channel, verdict: &verdict, model: &evaluation.model, tokens: (evaluation.usage.input_tokens, evaluation.usage.output_tokens) };
     let decision = rules::decide(&verdict, settings.thresholds());
-    tracing::info!(guild = %incoming.guild_id, kind = %verdict.kind, bad = verdict.bad(), lure = verdict.lure, ?decision, "judged");
+    tracing::info!(guild = %incoming.guild_id, kind = %verdict.kind, bad = verdict.bad(), lure = verdict.lure, ?decision, exempt, "judged");
+    if let Some(why) = exempt
+        && decision != Decision::Fine
+    {
+        let (outcome, n) = match decision {
+            Decision::Review => ("review", None),
+            _ => {
+                let (step, n) = next_step(state, &settings, &incoming.author_id).await?;
+                (step.as_str(), Some(n))
+            }
+        };
+        let applied = Applied { exempt: Some(why.to_owned()), ..Applied::default() };
+        let id = insert(state, &record, outcome, n, &applied).await?;
+        if let Some(id) = id {
+            report(state, &settings, id, incoming, &channel, &verdict, outcome, n, &applied).await;
+        }
+        return Ok(id);
+    }
     match decision {
         Decision::Fine => Ok(None),
         Decision::Review => {
@@ -122,18 +140,14 @@ pub struct Applied {
     pub message_deleted: bool,
     /// "Couldn't act": why Discord refused.
     pub error: Option<String>,
+    /// Never acted on: the author is the owner, or in an exempt role or channel.
+    pub exempt: Option<String>,
 }
 
 /// Work out which strike this is and carry out its step (unless the server is watching).
 async fn strike(state: &AppState, settings: &Settings, user_id: &str, channel_id: &str, message_id: &str) -> Result<(Step, i32, Applied)> {
     let guild = &settings.guild;
-    let live: i64 = sqlx::query_scalar("SELECT count(*) FROM strikes WHERE guild_id=$1 AND user_id=$2 AND cleared_at IS NULL AND expires_at>now()")
-        .bind(&guild.id)
-        .bind(user_id)
-        .fetch_one(&state.pool)
-        .await?;
-    let n = live as i32 + 1;
-    let step = rules::step_for(&settings.ladder(), n as usize);
+    let (step, n) = next_step(state, settings, user_id).await?;
     if guild.mode != "enforce" {
         return Ok((step, n, Applied::default()));
     }
@@ -155,6 +169,17 @@ async fn strike(state: &AppState, settings: &Settings, user_id: &str, channel_id
         applied.error = Some(format!("couldn't {}: {why} (the bot's role must be above theirs, and it can't touch the owner or admins)", step.as_str()));
     }
     Ok((step, n, applied))
+}
+
+/// Which strike this would be, and its step, without doing anything.
+async fn next_step(state: &AppState, settings: &Settings, user_id: &str) -> Result<(Step, i32)> {
+    let live: i64 = sqlx::query_scalar("SELECT count(*) FROM strikes WHERE guild_id=$1 AND user_id=$2 AND cleared_at IS NULL AND expires_at>now()")
+        .bind(&settings.guild.id)
+        .bind(user_id)
+        .fetch_one(&state.pool)
+        .await?;
+    let n = live as i32 + 1;
+    Ok((rules::step_for(&settings.ladder(), n as usize), n))
 }
 
 /// The strike row, the warning notice and the log post, once the action row exists.
@@ -237,6 +262,7 @@ async fn report(state: &AppState, settings: &Settings, id: Uuid, incoming: &Inco
 #[allow(clippy::too_many_arguments)]
 pub fn report_body(id: Uuid, incoming: &Incoming, channel: &str, verdict: &Verdict, outcome: &str, n: Option<i32>, applied: &Applied, mode: &str) -> (String, Value) {
     let did = match (outcome, applied.enforced, &applied.error) {
+        _ if applied.exempt.is_some() => format!("[exempt: {}, nothing done] would **{outcome}**", applied.exempt.as_deref().unwrap_or_default()),
         ("review", _, _) => "⚑ **review**".to_owned(),
         (step, _, Some(error)) => format!("⚠️ tried to **{step}** but {error}"),
         (step, true, None) => format!("**{step}**"),
