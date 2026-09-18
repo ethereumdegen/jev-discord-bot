@@ -1,0 +1,2 @@
+A throwaway RSA key made for tests only (verifying Google ID tokens against a JWK set).
+It signs nothing real. Do not use it anywhere else.

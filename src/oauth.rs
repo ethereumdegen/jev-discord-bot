@@ -95,6 +95,28 @@ struct GoogleClaims {
     picture: Option<String>,
 }
 
+/// Check a Google ID token: RS256, signed by a key in Google's set, for our
+/// client, from Google, unexpired, with our nonce and a verified email.
+fn verify_google_id_token(id_token: &str, jwks: &JwkSet, client_id: &str, nonce: &str) -> Result<GoogleClaims, &'static str> {
+    let header = decode_header(id_token).map_err(|_| "not a JWT")?;
+    if header.alg != Algorithm::RS256 {
+        return Err("not RS256");
+    }
+    let kid = header.kid.ok_or("no key id")?;
+    let key = DecodingKey::from_jwk(jwks.find(&kid).ok_or("unknown key id")?).map_err(|_| "unusable key")?;
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.set_audience(&[client_id]);
+    validation.set_issuer(&["https://accounts.google.com", "accounts.google.com"]);
+    let claims = decode::<GoogleClaims>(id_token, &key, &validation).map_err(|_| "signature, audience, issuer or expiry is wrong")?.claims;
+    if claims.nonce != nonce {
+        return Err("wrong nonce");
+    }
+    if claims.email_verified != Some(true) {
+        return Err("email not verified");
+    }
+    Ok(claims)
+}
+
 pub async fn finish_google(state: &AppState, headers: &HeaderMap, code: &str, oauth_state: &str) -> ApiResult<(String, NewSession)> {
     let google = state.config.google.as_ref().ok_or(ApiError::Unavailable("Google sign-in"))?;
     let attempt = consume(state, headers, "google", oauth_state).await?;
@@ -118,11 +140,6 @@ pub async fn finish_google(state: &AppState, headers: &HeaderMap, code: &str, oa
     }
     let token: serde_json::Value = response.json().await.map_err(|_| ApiError::Forbidden)?;
     let id_token = token["id_token"].as_str().ok_or(ApiError::Forbidden)?;
-    let header = decode_header(id_token).map_err(|_| ApiError::Forbidden)?;
-    if header.alg != Algorithm::RS256 {
-        return Err(ApiError::Forbidden);
-    }
-    let kid = header.kid.ok_or(ApiError::Forbidden)?;
     let jwks: JwkSet = state
         .http
         .get("https://www.googleapis.com/oauth2/v3/certs")
@@ -132,14 +149,10 @@ pub async fn finish_google(state: &AppState, headers: &HeaderMap, code: &str, oa
         .json()
         .await
         .map_err(|_| ApiError::Forbidden)?;
-    let key = DecodingKey::from_jwk(jwks.find(&kid).ok_or(ApiError::Forbidden)?).map_err(|_| ApiError::Forbidden)?;
-    let mut validation = Validation::new(Algorithm::RS256);
-    validation.set_audience(&[google.client_id.as_str()]);
-    validation.set_issuer(&["https://accounts.google.com", "accounts.google.com"]);
-    let claims = decode::<GoogleClaims>(id_token, &key, &validation).map_err(|_| ApiError::Forbidden)?.claims;
-    if claims.nonce != attempt.nonce || claims.email_verified != Some(true) {
-        return Err(ApiError::Forbidden);
-    }
+    let claims = verify_google_id_token(id_token, &jwks, &google.client_id, &attempt.nonce).map_err(|reason| {
+        tracing::warn!(%reason, "Google ID token refused");
+        ApiError::Forbidden
+    })?;
     let name = claims.name.clone().or_else(|| claims.email.clone()).unwrap_or_else(|| "Someone".into());
     let identity = Identity { provider: "google", subject: claims.sub, email: claims.email, name, avatar_url: claims.picture };
     let account = auth::account_for(state, &identity).await?;
@@ -225,4 +238,46 @@ async fn link_discord(state: &AppState, account_id: Uuid, user: &User, guilds: &
     }
     tx.commit().await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use jsonwebtoken::{EncodingKey, Header, encode};
+    use serde_json::json;
+
+    use super::*;
+
+    const PEM: &str = include_str!("../tests/fixtures/google_test_rsa.pem");
+    const N: &str = include_str!("../tests/fixtures/google_test_rsa.n");
+
+    fn jwks() -> JwkSet {
+        serde_json::from_value(json!({ "keys": [{ "kty": "RSA", "alg": "RS256", "use": "sig", "kid": "k1", "n": N.trim(), "e": "AQAB" }] })).unwrap()
+    }
+
+    fn token(claims: serde_json::Value, kid: &str) -> String {
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(kid.into());
+        encode(&header, &claims, &EncodingKey::from_rsa_pem(PEM.as_bytes()).unwrap()).unwrap()
+    }
+
+    fn claims() -> serde_json::Value {
+        json!({ "iss": "https://accounts.google.com", "aud": "client-1", "sub": "g-123", "exp": chrono::Utc::now().timestamp() + 600,
+                "nonce": "n1", "email": "mod@example.com", "email_verified": true, "name": "Mod" })
+    }
+
+    /// The real RS256 path production uses: this panicked before a crypto backend was chosen.
+    #[test]
+    fn a_google_id_token_is_verified_against_the_key_set() {
+        let good = verify_google_id_token(&token(claims(), "k1"), &jwks(), "client-1", "n1").unwrap();
+        assert_eq!((good.sub.as_str(), good.email.as_deref()), ("g-123", Some("mod@example.com")));
+        assert_eq!(verify_google_id_token(&token(claims(), "k1"), &jwks(), "client-1", "other").err(), Some("wrong nonce"));
+        assert!(verify_google_id_token(&token(claims(), "k1"), &jwks(), "client-2", "n1").is_err());
+        assert_eq!(verify_google_id_token(&token(claims(), "k9"), &jwks(), "client-1", "n1").err(), Some("unknown key id"));
+        let mut unverified = claims();
+        unverified["email_verified"] = json!(false);
+        assert_eq!(verify_google_id_token(&token(unverified, "k1"), &jwks(), "client-1", "n1").err(), Some("email not verified"));
+        let mut expired = claims();
+        expired["exp"] = json!(chrono::Utc::now().timestamp() - 3600);
+        assert!(verify_google_id_token(&token(expired, "k1"), &jwks(), "client-1", "n1").is_err());
+    }
 }
