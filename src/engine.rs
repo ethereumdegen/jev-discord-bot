@@ -30,10 +30,17 @@ pub async fn handle_message(state: &AppState, incoming: &Incoming) -> Result<Opt
     if guild.removed_at.is_some() || guild.mode == "paused" || !settings.spam.enabled {
         return Ok(None);
     }
-    if guild.owner_user_id.as_deref() == Some(incoming.author_id.as_str())
-        || guild.exempt_channel_ids.contains(&incoming.channel_id)
-        || incoming.role_ids.iter().any(|r| guild.exempt_role_ids.contains(r))
-    {
+    let exempt = if guild.owner_user_id.as_deref() == Some(incoming.author_id.as_str()) {
+        Some("server owner")
+    } else if guild.exempt_channel_ids.contains(&incoming.channel_id) {
+        Some("exempt channel")
+    } else if incoming.role_ids.iter().any(|r| guild.exempt_role_ids.contains(r)) {
+        Some("exempt role")
+    } else {
+        None
+    };
+    if let Some(why) = exempt {
+        tracing::info!(guild = %incoming.guild_id, why, "not judged");
         return Ok(None);
     }
     let seen = state.hot.incr(&format!("jev:msgs:{}:{}", incoming.guild_id, incoming.author_id), 90 * 86_400).await?;
@@ -64,7 +71,9 @@ pub async fn handle_message(state: &AppState, incoming: &Incoming) -> Result<Opt
     let context = JudgeContext { community: &guild.community, channel: &channel, prior_messages: seen - 1 };
     let (verdict, evaluation) = judge(&state.jev, incoming, context, now).await?;
     let record = Record { settings: &settings, incoming, channel: &channel, verdict: &verdict, model: &evaluation.model, tokens: (evaluation.usage.input_tokens, evaluation.usage.output_tokens) };
-    match rules::decide(&verdict, settings.thresholds()) {
+    let decision = rules::decide(&verdict, settings.thresholds());
+    tracing::info!(guild = %incoming.guild_id, kind = %verdict.kind, bad = verdict.bad(), lure = verdict.lure, ?decision, "judged");
+    match decision {
         Decision::Fine => Ok(None),
         Decision::Review => {
             let id = insert(state, &record, "review", None, &Applied::default()).await?;

@@ -57,8 +57,9 @@ pub async fn run(state: AppState) -> Result<()> {
                             state.config.default_allowance,
                         )
                         .await;
-                        if let Err(error) = result {
-                            tracing::warn!(?error, "could not record a server");
+                        match result {
+                            Ok(()) => tracing::info!(guild = %guild.id, name = %guild.name, "server connected"),
+                            Err(error) => tracing::warn!(?error, "could not record a server"),
                         }
                     });
                 }
