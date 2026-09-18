@@ -129,8 +129,8 @@ Degen Builders' server becomes the first tenant.
 
 ## What was built (2026-09-18)
 
-- **Name and home:** Degen Guard at guard.degenbuilders.com, its own Railway project (web,
-  gateway, worker from one image).
+- **Name and home:** Degen Guard at guard.degenbuilders.com, its own Railway project: one
+  service (`jevmod all`) to start; web / gateway / worker split later if needed.
 - **Defaults chosen:** 2,000 judged messages per server per month (the operator raises it);
   past it the bot keeps logging nothing new and tells the log channel once; warnings are a
   channel notice that deletes itself after a minute; new servers start in watch mode.

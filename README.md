@@ -7,14 +7,17 @@ the server's managers can read and undo. See [PLAN.md](PLAN.md).
 
 ## How it runs
 
-One binary, `jevmod`, in four roles:
+One binary, `jevmod`. **To start, one Railway service** runs `jevmod all` (`railway.toml`):
+the site, the Discord connection and a worker in one process, at one replica.
 
-| Role | What | Railway |
+Later, when it needs to scale, split it into roles (configs in `deploy/`):
+
+| Role | What | Why separate |
 |---|---|---|
-| `web` | the site and API (Google or Discord sign-in, Add to Discord, settings, audit log) | `railway.toml` (domain guard.degenbuilders.com) |
-| `gateway` | the Discord connection: records servers joining/leaving, queues messages, answers buttons and `/guard` | `railway.gateway.toml`, exactly one replica |
-| `worker` | pops the queue, asks Jev, applies the ladder, writes the log | `railway.worker.toml`, add replicas as needed |
-| `migrate` | runs before each web deploy | |
+| `web` | the site and API | can run many copies; its deploys no longer drop the Discord connection |
+| `gateway` | the Discord connection: servers joining/leaving, queues messages, buttons and `/guard` | must be exactly one copy |
+| `worker` | pops the queue, asks Jev, applies the ladder, writes the log | add copies when the queue backs up |
+| `migrate` | runs before each deploy | |
 
 Neon holds accounts, servers, rules, strikes and the audit log. Redis (Upstash) holds the
 queue (a stream with a consumer group), cached server settings, cooldowns, message dedupe and

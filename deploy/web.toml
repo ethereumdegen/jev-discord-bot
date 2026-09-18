@@ -1,0 +1,10 @@
+# Later, split: the site and API alone (set its start command to web; replicas are fine).
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+preDeployCommand = "/app/jevmod migrate"
+startCommand = "/app/jevmod web"
+healthcheckPath = "/api/health"
+restartPolicyType = "ON_FAILURE"

@@ -1,11 +1,15 @@
-# guard.degenbuilders.com — the site and API. Migrations run before each deploy.
+# guard.degenbuilders.com — ONE service runs everything (`all`: the site, the
+# Discord gateway and a worker). Keep it at ONE replica: two copies would open
+# two gateway connections and Discord drops one. When you need to scale, split
+# into the role configs in deploy/ (web can then have many replicas).
 [build]
 builder = "DOCKERFILE"
 dockerfilePath = "Dockerfile"
 
 [deploy]
 preDeployCommand = "/app/jevmod migrate"
-startCommand = "/app/jevmod web"
+startCommand = "/app/jevmod all"
 healthcheckPath = "/api/health"
 healthcheckTimeout = 60
 restartPolicyType = "ON_FAILURE"
+numReplicas = 1
