@@ -36,11 +36,9 @@ async fn the_ladder_warns_then_kicks_then_bans() {
     assert!(logged.last().unwrap().contains("**warn**") && logged.last().unwrap().contains(&format!("g:undo:{a}")), "{logged:?}");
 
     // Strike 2: kick. Strike 3: ban.
-    w.cool_down().await;
     let b = engine::handle_message(s, &message("g1", "m4", "502", "buy my course, last chance", &[], 40)).await.unwrap().unwrap();
     assert_eq!(w.outcome(b).await.0, "kick");
     assert_eq!(count(&w.discord, "DELETE", "/guilds/g1/members/502"), 1);
-    w.cool_down().await;
     let c = engine::handle_message(s, &message("g1", "m5", "502", "buy my course!!!", &[], 40)).await.unwrap().unwrap();
     assert_eq!(w.outcome(c).await.0, "ban");
     assert_eq!(count(&w.discord, "PUT", "/guilds/g1/bans/502"), 1);
@@ -50,13 +48,11 @@ async fn the_ladder_warns_then_kicks_then_bans() {
     assert_eq!(count(&w.discord, "DELETE", "/guilds/g1/bans/502"), 1);
     assert!(engine::undo(s, "g1", c, "web:mod").await.unwrap().is_none());
     // So their next offense is strike 3 again, a ban.
-    w.cool_down().await;
     let d = engine::handle_message(s, &message("g1", "m6", "502", "buy my course again", &[], 40)).await.unwrap().unwrap();
     assert_eq!(w.outcome(d).await.1, Some(3));
 
     // Strikes expire.
     sqlx::query("UPDATE strikes SET expires_at=now()-interval '1 day' WHERE user_id='502'").execute(&s.pool).await.unwrap();
-    w.cool_down().await;
     let e = engine::handle_message(s, &message("g1", "m7", "502", "buy my course, fresh start", &[], 40)).await.unwrap().unwrap();
     assert_eq!(w.outcome(e).await.1, Some(1));
 
@@ -90,14 +86,11 @@ async fn skips_exemptions_and_reports_what_it_couldnt_do() {
     }
     let strikes: i64 = sqlx::query_scalar("SELECT count(*) FROM strikes").fetch_one(&s.pool).await.unwrap();
     assert_eq!(strikes, 0);
-    // A regular's plain chat never reaches Jev, but their links do.
-    sqlx::query("SELECT 1").execute(&s.pool).await.unwrap();
+    // A long-time regular is judged like anyone: a hacked account's scam with no link is still caught.
     for i in 0..25 {
         let _ = engine::handle_message(s, &message("g1", &format!("r{i}"), "602", "hello", &[], 90)).await;
-        w.cool_down().await;
     }
-    assert!(engine::handle_message(s, &message("g1", "m4", "602", "free nitro lol", &[], 90)).await.unwrap().is_none());
-    assert!(engine::handle_message(s, &message("g1", "m5", "602", "free nitro https://x.example", &[], 90)).await.unwrap().is_some());
+    assert!(engine::handle_message(s, &message("g1", "m4", "602", "free nitro lol", &[], 90)).await.unwrap().is_some());
 
     // Someone who outranks the bot: logged as couldn't act, no strike.
     sqlx::query("UPDATE rules SET ladder='{kick}'").execute(&s.pool).await.unwrap();

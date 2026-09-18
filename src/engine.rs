@@ -44,15 +44,11 @@ pub async fn handle_message(state: &AppState, incoming: &Incoming) -> Result<Opt
     if let Some(why) = exempt {
         tracing::info!(guild = %incoming.guild_id, why, "exempt: judged but never acted on");
     }
+    if !rules::needs_judging(incoming) {
+        return Ok(None);
+    }
     let seen = state.hot.incr(&format!("jev:msgs:{}:{}", incoming.guild_id, incoming.author_id), 90 * 86_400).await?;
     let now = Utc::now();
-    if !rules::needs_judging(incoming, seen - 1, now) {
-        return Ok(None);
-    }
-    // A flood is judged once every few seconds, not once per message; links always are.
-    if !rules::risky(incoming) && !state.hot.first_in(&format!("jev:cool:{}:{}", incoming.guild_id, incoming.author_id), 5).await? {
-        return Ok(None);
-    }
     let this_month = month(now);
     let used = state.hot.incr(&usage_key(&incoming.guild_id, &this_month), 40 * 86_400).await?;
     if used > i64::from(guild.monthly_allowance) {

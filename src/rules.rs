@@ -3,13 +3,8 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-
-/// Someone in the server this long, with this many messages seen, is a regular:
-/// their plain chat isn't judged (links and @everyone still are).
-pub const REGULAR_DAYS: i64 = 30;
-pub const REGULAR_MESSAGES: i64 = 20;
 
 /// A message as the gateway delivered it, stripped to what the rules need.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -107,18 +102,10 @@ pub fn has_link(text: &str) -> bool {
     ["http://", "https://", "www.", "discord.gg/", "discord.com/invite", "t.me/", "bit.ly/"].iter().any(|m| lower.contains(m))
 }
 
-pub fn risky(incoming: &Incoming) -> bool {
-    has_link(&incoming.content) || incoming.mentions_everyone || incoming.content.contains("@everyone") || incoming.content.contains("@here")
-}
-
-/// The cheap check before paying for a judgment. `prior` is how many of their
-/// messages the bot has seen before this one.
-pub fn needs_judging(incoming: &Incoming, prior: i64, now: DateTime<Utc>) -> bool {
-    if incoming.author_is_bot || incoming.content.trim().is_empty() {
-        return false;
-    }
-    let regular = prior >= REGULAR_MESSAGES && incoming.joined_at.is_some_and(|joined| now - joined >= Duration::days(REGULAR_DAYS));
-    !regular || risky(incoming)
+/// Every message with text is judged, whoever sent it: only bots and
+/// text-less messages (an image on its own) are skipped.
+pub fn needs_judging(incoming: &Incoming) -> bool {
+    !incoming.author_is_bot && !incoming.content.trim().is_empty()
 }
 
 /// What Jev said about a message.
@@ -171,6 +158,7 @@ pub fn decide(verdict: &Verdict, thresholds: Thresholds) -> Decision {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     fn verdict(spam: f64, scam: f64, promo: f64) -> Verdict {
         let probabilities = [("legit", 1.0 - spam - scam - promo), ("spam", spam), ("scam_or_phishing", scam), ("self_promo_off_topic", promo)]
@@ -203,7 +191,7 @@ mod tests {
     }
 
     #[test]
-    fn regulars_skip_the_judge_unless_they_post_links() {
+    fn every_message_with_text_is_judged() {
         let now = Utc::now();
         let mut m = Incoming {
             guild_id: "g".into(),
@@ -217,15 +205,12 @@ mod tests {
             role_ids: vec![],
             mentions_everyone: false,
         };
-        assert!(!needs_judging(&m, 50, now), "a regular's chat");
-        assert!(needs_judging(&m, 5, now), "not enough history yet");
-        m.content = "check https://example.com".into();
-        assert!(needs_judging(&m, 50, now), "links always are");
+        assert!(needs_judging(&m), "a regular's plain chat");
+        m.content = "  ".into();
+        assert!(!needs_judging(&m), "no text");
         m.content = "hi".into();
-        m.joined_at = Some(now - Duration::days(2));
-        assert!(needs_judging(&m, 50, now), "new to the server");
         m.author_is_bot = true;
-        assert!(!needs_judging(&m, 0, now));
+        assert!(!needs_judging(&m), "a bot");
     }
 
     #[test]

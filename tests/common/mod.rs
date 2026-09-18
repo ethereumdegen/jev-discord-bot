@@ -183,7 +183,7 @@ pub async fn world() -> (World, Stubs) {
         typesafe_api_key: "ts_test".into(),
         typesafe_endpoint: Some(jev().await),
         operator_emails: vec!["op@example.com".into()],
-        default_allowance: 2000,
+        default_allowance: 5_000,
     };
     let hot = Hot::connect(&redis_url).await.unwrap();
     let state = AppState::new(config, pool, hot).unwrap();
@@ -193,7 +193,7 @@ pub async fn world() -> (World, Stubs) {
 impl World {
     /// Install the bot in a server (as the gateway does when it joins).
     pub async fn install(&self, guild_id: &str, owner: &str) {
-        guilds::installed(&self.state.pool, &self.state.hot, guild_id, "Builders", None, Some(owner), 2000).await.unwrap();
+        guilds::installed(&self.state.pool, &self.state.hot, guild_id, "Builders", None, Some(owner), self.state.config.default_allowance).await.unwrap();
     }
 
     pub async fn set(&self, guild_id: &str, sql_set: &str) {
@@ -205,14 +205,6 @@ impl World {
         sqlx::query_as("SELECT outcome,strike_number,enforced,error FROM actions WHERE id=$1").bind(id).fetch_one(&self.state.pool).await.unwrap()
     }
 
-    /// Let the same author be judged again right away.
-    pub async fn cool_down(&self) {
-        let mut conn = redis::Client::open(self.state.config.redis_url.as_str()).unwrap().get_multiplexed_async_connection().await.unwrap();
-        let keys: Vec<String> = redis::cmd("KEYS").arg("jev:cool:*").query_async(&mut conn).await.unwrap();
-        for key in keys {
-            let _: () = redis::cmd("DEL").arg(key).query_async(&mut conn).await.unwrap();
-        }
-    }
 }
 
 pub fn message(guild: &str, id: &str, author: &str, text: &str, roles: &[&str], joined_days: i64) -> Incoming {

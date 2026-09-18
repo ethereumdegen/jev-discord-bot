@@ -82,7 +82,7 @@ impl Config {
             typesafe_api_key: need("TYPESAFE_API_KEY")?,
             typesafe_endpoint: get("TYPESAFE_ENDPOINT"),
             operator_emails: get("OPERATOR_EMAILS").map(|v| v.split(',').map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()).collect()).unwrap_or_default(),
-            default_allowance: get("DEFAULT_MONTHLY_ALLOWANCE").map(|v| v.parse()).transpose().context("DEFAULT_MONTHLY_ALLOWANCE must be a number")?.unwrap_or(2000),
+            default_allowance: get("DEFAULT_MONTHLY_ALLOWANCE").map(|v| v.parse()).transpose().context("DEFAULT_MONTHLY_ALLOWANCE must be a number")?.unwrap_or(5_000),
             base_url,
         })
     }
