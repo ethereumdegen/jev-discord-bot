@@ -1,5 +1,15 @@
-pub mod bot;
+pub mod auth;
 pub mod config;
 pub mod discord;
+pub mod engine;
+pub mod error;
+pub mod gateway;
+pub mod guilds;
+pub mod hot;
+pub mod http;
+pub mod interactions;
 pub mod judge;
+pub mod oauth;
 pub mod rules;
+pub mod state;
+pub mod worker;

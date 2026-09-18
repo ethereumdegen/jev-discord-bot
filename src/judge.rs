@@ -5,13 +5,15 @@ use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Utc};
 use jev::{Answer, AsyncTypeSafeClient, Evaluation, Question, Questions, State};
 
-use crate::rules::{Incoming, Sender, Verdict, created_at, has_link};
+use crate::rules::{Incoming, Verdict, created_at, has_link};
+
+pub const DEFAULT_COMMUNITY: &str = "A Discord server. Conversation, questions, and sharing your own work where it fits are normal.";
 
 pub struct JudgeContext<'a> {
+    /// The owner's description of their server.
     pub community: &'a str,
     pub channel: &'a str,
-    pub sender: Sender,
-    pub prior_messages: i32,
+    pub prior_messages: i64,
 }
 
 pub async fn judge(client: &AsyncTypeSafeClient, incoming: &Incoming, context: JudgeContext<'_>, now: DateTime<Utc>) -> Result<(Verdict, Evaluation)> {
@@ -19,10 +21,10 @@ pub async fn judge(client: &AsyncTypeSafeClient, incoming: &Incoming, context: J
     let account_days = days(created_at(&incoming.author_id));
     let joined_days = days(incoming.joined_at);
     let prior = context.prior_messages.to_string();
+    let community = if context.community.trim().is_empty() { DEFAULT_COMMUNITY } else { context.community };
     let facts = [
-        ("community", context.community),
+        ("community", community),
         ("channel", context.channel),
-        ("sender", context.sender.describe()),
         ("account_age_days", account_days.as_str()),
         ("days_in_server", joined_days.as_str()),
         ("earlier_messages_seen", prior.as_str()),

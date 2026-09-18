@@ -1,58 +1,51 @@
-use std::env;
+use std::{env, net::SocketAddr, path::PathBuf};
 
 use anyhow::{Context, Result, bail};
 
-use crate::rules::Thresholds;
+/// The Discord application: the bot token, and OAuth for connecting accounts
+/// and installing the bot.
+#[derive(Clone)]
+pub struct DiscordConfig {
+    pub client_id: String,
+    pub client_secret: String,
+    pub bot_token: String,
+    /// `https://discord.com/api/v10`; a stand-in in tests.
+    pub api_base: String,
+    /// Where browsers go to authorize; `https://discord.com`.
+    pub authorize_base: String,
+}
+
+#[derive(Clone)]
+pub struct GoogleConfig {
+    pub client_id: String,
+    pub client_secret: String,
+}
 
 #[derive(Clone)]
 pub struct Config {
-    pub bot_token: String,
-    pub guild_id: String,
-    /// Roles whose holders are paying members: never kicked or banned automatically.
-    pub member_role_ids: Vec<String>,
-    /// Roles the bot never judges (mods, team).
-    pub staff_role_ids: Vec<String>,
-    /// A staff-only channel the bot reports to, with Undo buttons.
-    pub mod_log_channel_id: Option<String>,
+    /// What the product is called on the site and in Discord.
+    pub brand: String,
+    /// `https://jevmod.example`, without a trailing slash.
+    pub base_url: String,
+    pub bind: SocketAddr,
+    pub production: bool,
+    pub database_url: String,
+    /// Upstash (`rediss://…`) or a local Redis.
+    pub redis_url: String,
+    pub static_dir: PathBuf,
+    pub discord: DiscordConfig,
+    pub google: Option<GoogleConfig>,
     pub typesafe_api_key: String,
     /// Jev's endpoint; a stand-in in tests.
     pub typesafe_endpoint: Option<String>,
-    pub database_url: String,
-    /// `https://discord.com/api/v10`; a stand-in in tests.
-    pub discord_api_base: String,
-    /// The mode until a mod sets one with /jev: shadow (log only) or enforce.
-    pub default_mode: String,
-    pub thresholds: Thresholds,
-    /// Plain-language description of the server, given to Jev with every message.
-    pub community: String,
+    /// Emails that become operators (see every server, set allowances) when they sign in.
+    pub operator_emails: Vec<String>,
+    pub default_allowance: i32,
 }
 
 impl std::fmt::Debug for Config {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Config")
-            .field("guild_id", &self.guild_id)
-            .field("member_role_ids", &self.member_role_ids)
-            .field("staff_role_ids", &self.staff_role_ids)
-            .field("mod_log_channel_id", &self.mod_log_channel_id)
-            .field("default_mode", &self.default_mode)
-            .finish_non_exhaustive()
-    }
-}
-
-fn list(value: Option<String>) -> Vec<String> {
-    value.map(|v| v.split(',').map(|s| s.trim().to_owned()).filter(|s| !s.is_empty()).collect()).unwrap_or_default()
-}
-
-fn percent(value: Option<String>, name: &str, default: f64) -> Result<f64> {
-    match value {
-        None => Ok(default),
-        Some(v) => {
-            let n: f64 = v.parse().with_context(|| format!("{name} must be a number from 1 to 100"))?;
-            if !(1.0..=100.0).contains(&n) {
-                bail!("{name} must be from 1 to 100");
-            }
-            Ok(n / 100.0)
-        }
+        f.debug_struct("Config").field("brand", &self.brand).field("base_url", &self.base_url).finish_non_exhaustive()
     }
 }
 
@@ -60,32 +53,37 @@ impl Config {
     pub fn from_env() -> Result<Self> {
         let get = |name: &str| env::var(name).ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
         let need = |name: &str| get(name).with_context(|| format!("{name} is required"));
-        let default_mode = get("DEFAULT_MODE").unwrap_or_else(|| "shadow".into());
-        if !matches!(default_mode.as_str(), "shadow" | "enforce") {
-            bail!("DEFAULT_MODE is shadow or enforce");
+        let port: u16 = get("PORT").unwrap_or_else(|| "3120".into()).parse().context("PORT must be a port number")?;
+        let base_url = get("APP_BASE_URL").unwrap_or_else(|| format!("http://localhost:{port}")).trim_end_matches('/').to_owned();
+        let production = get("APP_ENV").as_deref() == Some("production");
+        if production && base_url.starts_with("http://") {
+            bail!("APP_BASE_URL must be https in production");
         }
-        let thresholds = Thresholds {
-            confident: percent(get("CONFIDENT_PERCENT"), "CONFIDENT_PERCENT", 0.9)?,
-            flag: percent(get("FLAG_PERCENT"), "FLAG_PERCENT", 0.6)?,
+        let google = match (get("GOOGLE_CLIENT_ID"), get("GOOGLE_CLIENT_SECRET")) {
+            (Some(client_id), Some(client_secret)) => Some(GoogleConfig { client_id, client_secret }),
+            (None, None) => None,
+            _ => bail!("set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET together"),
         };
-        if thresholds.flag > thresholds.confident {
-            bail!("FLAG_PERCENT can't be above CONFIDENT_PERCENT");
-        }
         Ok(Self {
-            bot_token: need("DISCORD_BOT_TOKEN")?,
-            guild_id: need("DISCORD_GUILD_ID")?,
-            member_role_ids: list(get("MEMBER_ROLE_IDS")),
-            staff_role_ids: list(get("STAFF_ROLE_IDS")),
-            mod_log_channel_id: get("MOD_LOG_CHANNEL_ID"),
+            brand: get("BRAND").unwrap_or_else(|| "Degen Guard".into()),
+            bind: SocketAddr::from(([0, 0, 0, 0], port)),
+            production,
+            database_url: need("DATABASE_URL")?,
+            redis_url: need("REDIS_URL")?,
+            static_dir: get("STATIC_DIR").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("frontend/dist")),
+            discord: DiscordConfig {
+                client_id: need("DISCORD_CLIENT_ID")?,
+                client_secret: need("DISCORD_CLIENT_SECRET")?,
+                bot_token: need("DISCORD_BOT_TOKEN")?,
+                api_base: get("DISCORD_API_BASE").unwrap_or_else(|| "https://discord.com/api/v10".into()).trim_end_matches('/').to_owned(),
+                authorize_base: get("DISCORD_AUTHORIZE_BASE").unwrap_or_else(|| "https://discord.com".into()).trim_end_matches('/').to_owned(),
+            },
+            google,
             typesafe_api_key: need("TYPESAFE_API_KEY")?,
             typesafe_endpoint: get("TYPESAFE_ENDPOINT"),
-            database_url: need("DATABASE_URL")?,
-            discord_api_base: get("DISCORD_API_BASE").unwrap_or_else(|| "https://discord.com/api/v10".into()).trim_end_matches('/').to_owned(),
-            default_mode,
-            thresholds,
-            community: get("COMMUNITY_DESCRIPTION").unwrap_or_else(|| {
-                "A Discord for AI developers and agentic coders. Talking shop, sharing your own projects in the right channel, and asking for help are all normal.".into()
-            }),
+            operator_emails: get("OPERATOR_EMAILS").map(|v| v.split(',').map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()).collect()).unwrap_or_default(),
+            default_allowance: get("DEFAULT_MONTHLY_ALLOWANCE").map(|v| v.parse()).transpose().context("DEFAULT_MONTHLY_ALLOWANCE must be a number")?.unwrap_or(2000),
+            base_url,
         })
     }
 }
