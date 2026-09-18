@@ -1,0 +1,35 @@
+[package]
+name = "jev-discord-bot"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+publish = false
+description = "A Discord spam bot: Jev (TypeSafe) judges messages; members are never kicked or banned automatically."
+
+[lib]
+name = "jev_discord_bot"
+path = "src/lib.rs"
+
+[[bin]]
+name = "jev-discord-bot"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.100"
+chrono = { version = "0.4.42", features = ["serde"] }
+jev = { version = "0.1.0", features = ["async"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["json", "rustls-tls"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
+sqlx = { version = "0.8.6", default-features = false, features = ["runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros"] }
+tokio = { version = "1.48.0", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter", "json"] }
+twilight-gateway = { version = "0.17.1", default-features = false, features = ["rustls-webpki-roots", "zlib"] }
+twilight-model = "0.17.1"
+uuid = { version = "1.18.1", features = ["v4", "serde"] }
+
+[dev-dependencies]
+axum = "0.8.8"
+pgtemp = "0.7"
