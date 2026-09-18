@@ -18,10 +18,13 @@ async fn main() -> Result<()> {
         .init();
     let role = std::env::args().nth(1).or_else(|| std::env::var("ROLE").ok()).unwrap_or_else(|| "all".into());
     let config = Config::from_env()?;
-    let pool = state::connect(&config.database_url).await.context("connect to Postgres")?;
     if role == "migrate" {
+        // Neon's pooler breaks the session lock sqlx takes while migrating: use the direct URL.
+        let url = std::env::var("MIGRATION_DATABASE_URL").ok().filter(|u| !u.is_empty()).unwrap_or_else(|| config.database_url.clone());
+        let pool = state::connect(&url).await.context("connect to Postgres")?;
         return Ok(MIGRATOR.run(&pool).await?);
     }
+    let pool = state::connect(&config.database_url).await.context("connect to Postgres")?;
     if role == "all" {
         // Local runs have no separate migrate step.
         MIGRATOR.run(&pool).await?;
