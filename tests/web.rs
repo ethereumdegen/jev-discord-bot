@@ -39,7 +39,7 @@ async fn an_owner_adds_the_bot_configures_it_and_reads_the_log() {
     let page = alice.get("/api/servers/g1").await.json();
     assert_eq!(page["server"]["mode"], "watch");
     assert_eq!(page["rules"][0]["ladder"], json!(["warn", "kick", "ban"]));
-    assert_eq!(page["month"]["allowance"], 5_000);
+    assert_eq!(page["month"]["allowance"], 10_000);
 
     // Channels and roles for the pickers (text channels only; no @everyone or bot roles).
     let picks = alice.get("/api/servers/g1/discord").await.json();
@@ -120,7 +120,7 @@ async fn nobody_manages_a_server_they_dont_run() {
     let op = Browser::new(s);
     op.discord("sign_in", "code-op").await;
     let servers = op.get("/api/operator/servers").await.json();
-    assert_eq!(servers["servers"][0]["allowance"], 5_000);
+    assert_eq!(servers["servers"][0]["allowance"], 10_000);
     assert_eq!(op.patch("/api/operator/servers/g1", json!({ "monthly_allowance": 250000 })).await.status, StatusCode::NO_CONTENT);
     assert_eq!(op.get("/api/servers/g1").await.json()["month"]["allowance"], 250000);
 }

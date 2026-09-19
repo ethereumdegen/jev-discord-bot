@@ -183,7 +183,7 @@ pub async fn world() -> (World, Stubs) {
         typesafe_api_key: "ts_test".into(),
         typesafe_endpoint: Some(jev().await),
         operator_emails: vec!["op@example.com".into()],
-        default_allowance: 5_000,
+        default_allowance: 10_000,
     };
     let hot = Hot::connect(&redis_url).await.unwrap();
     let state = AppState::new(config, pool, hot).unwrap();
