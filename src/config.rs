@@ -15,10 +15,16 @@ pub struct DiscordConfig {
     pub authorize_base: String,
 }
 
+/// Degen Builders as the identity provider: guard.degenbuilders.com doesn't
+/// run a sign-in of its own, it asks degenbuilders.com who you are.
 #[derive(Clone)]
-pub struct GoogleConfig {
+pub struct SsoConfig {
+    /// `https://degenbuilders.com`, without a trailing slash.
+    pub base_url: String,
     pub client_id: String,
     pub client_secret: String,
+    /// What the sign-in button says.
+    pub label: String,
 }
 
 #[derive(Clone)]
@@ -34,7 +40,7 @@ pub struct Config {
     pub redis_url: String,
     pub static_dir: PathBuf,
     pub discord: DiscordConfig,
-    pub google: Option<GoogleConfig>,
+    pub sso: Option<SsoConfig>,
     pub typesafe_api_key: String,
     /// Jev's endpoint; a stand-in in tests.
     pub typesafe_endpoint: Option<String>,
@@ -59,11 +65,19 @@ impl Config {
         if production && base_url.starts_with("http://") {
             bail!("APP_BASE_URL must be https in production");
         }
-        let google = match (get("GOOGLE_CLIENT_ID"), get("GOOGLE_CLIENT_SECRET")) {
-            (Some(client_id), Some(client_secret)) => Some(GoogleConfig { client_id, client_secret }),
-            (None, None) => None,
-            _ => bail!("set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET together"),
+        let sso = match (get("SSO_BASE_URL"), get("SSO_CLIENT_ID"), get("SSO_CLIENT_SECRET")) {
+            (Some(base), Some(client_id), Some(client_secret)) => Some(SsoConfig {
+                base_url: base.trim_end_matches('/').to_owned(),
+                client_id,
+                client_secret,
+                label: get("SSO_LABEL").unwrap_or_else(|| "Degen Builders".into()),
+            }),
+            (None, None, None) => None,
+            _ => bail!("set SSO_BASE_URL, SSO_CLIENT_ID and SSO_CLIENT_SECRET together"),
         };
+        if production && sso.is_none() {
+            bail!("SSO_BASE_URL, SSO_CLIENT_ID and SSO_CLIENT_SECRET are required in production: it's the only way to sign in");
+        }
         Ok(Self {
             brand: get("BRAND").unwrap_or_else(|| "Degen Guard".into()),
             bind: SocketAddr::from(([0, 0, 0, 0], port)),
@@ -78,7 +92,7 @@ impl Config {
                 api_base: get("DISCORD_API_BASE").unwrap_or_else(|| "https://discord.com/api/v10".into()).trim_end_matches('/').to_owned(),
                 authorize_base: get("DISCORD_AUTHORIZE_BASE").unwrap_or_else(|| "https://discord.com".into()).trim_end_matches('/').to_owned(),
             },
-            google,
+            sso,
             typesafe_api_key: need("TYPESAFE_API_KEY")?,
             typesafe_endpoint: get("TYPESAFE_ENDPOINT"),
             operator_emails: get("OPERATOR_EMAILS").map(|v| v.split(',').map(|e| e.trim().to_lowercase()).filter(|e| !e.is_empty()).collect()).unwrap_or_default(),

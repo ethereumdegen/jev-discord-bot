@@ -38,8 +38,8 @@ const CSP: &str = "default-src 'self'; img-src 'self' data: https://cdn.discorda
 pub fn app(state: AppState) -> Router {
     let api = Router::new()
         .route("/health", get(health))
-        .route("/auth/google/start", get(google_start))
-        .route("/auth/google/callback", get(google_callback))
+        .route("/auth/sso/start", get(sso_start))
+        .route("/auth/sso/callback", get(sso_callback))
         .route("/auth/discord/start", get(discord_start))
         .route("/auth/discord/callback", get(discord_callback))
         .route("/auth/logout", post(logout))
@@ -94,6 +94,8 @@ async fn health(State(state): State<AppState>) -> ApiResult<Json<Value>> {
 #[derive(Deserialize)]
 struct StartQuery {
     return_to: Option<String>,
+    /// For SSO: `1` never shows a sign-in screen, it only asks.
+    silent: Option<String>,
     /// For Discord: sign_in (default), connect or install.
     purpose: Option<String>,
 }
@@ -106,20 +108,40 @@ struct CallbackQuery {
     guild_id: Option<String>,
 }
 
-async fn google_start(State(state): State<AppState>, Query(q): Query<StartQuery>) -> ApiResult<Response> {
-    let started = oauth::begin_google(&state, q.return_to.as_deref().unwrap_or("/servers")).await?;
+/// Off to degenbuilders.com to be signed in. `silent=1` asks whether there's
+/// already a session there and comes straight back either way, so landing here
+/// signed in over there signs you in here too.
+async fn sso_start(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<StartQuery>) -> ApiResult<Response> {
+    let return_to = q.return_to.as_deref().unwrap_or("/servers");
+    let silent = q.silent.as_deref() == Some("1");
+    // Already signed in: a silent check has nothing to do.
+    if silent && auth::current(&state, &headers).await?.is_some() {
+        return Ok(redirect(&auth::safe_return(return_to), vec![]));
+    }
+    let started = oauth::begin_sso(&state, return_to, silent).await?;
     Ok(redirect(&started.url, vec![auth::oauth_cookie(&state, &started.browser)]))
 }
 
-async fn google_callback(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<CallbackQuery>) -> Response {
-    let (Some(code), Some(oauth_state), None) = (q.code.as_deref(), q.state.as_deref(), q.error.as_deref()) else { return redirect("/?error=google", vec![]) };
-    match oauth::finish_google(&state, &headers, code, oauth_state).await {
+async fn sso_callback(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<CallbackQuery>) -> Response {
+    // `login_required` is the silent check's answer: nobody is signed in over
+    // there. Land back where we started, marked so the page doesn't try again.
+    if let (Some(error), Some(oauth_state)) = (q.error.as_deref(), q.state.as_deref()) {
+        let back = oauth::abandon_sso(&state, &headers, oauth_state).await.unwrap_or_else(|_| "/".into());
+        let mark = if error == "login_required" { "sso=none" } else { "error=sso" };
+        return redirect(&with_query(&back, mark), vec![]);
+    }
+    let (Some(code), Some(oauth_state)) = (q.code.as_deref(), q.state.as_deref()) else { return redirect("/?error=sso", vec![]) };
+    match oauth::finish_sso(&state, &headers, code, oauth_state).await {
         Ok((path, session)) => redirect(&path, auth::session_cookies(&state, &session)),
         Err(error) => {
-            tracing::warn!(?error, "Google sign-in failed");
-            redirect("/?error=google", vec![])
+            tracing::warn!(?error, "Degen Builders sign-in failed");
+            redirect("/?error=sso", vec![])
         }
     }
+}
+
+fn with_query(path: &str, pair: &str) -> String {
+    if path.contains('?') { format!("{path}&{pair}") } else { format!("{path}?{pair}") }
 }
 
 async fn discord_start(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<StartQuery>) -> ApiResult<Response> {
@@ -156,7 +178,8 @@ async fn logout(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<
 }
 
 async fn me(State(state): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
-    let site = json!({ "brand": state.config.brand, "google": state.config.google.is_some() });
+    let sso = state.config.sso.as_ref();
+    let site = json!({ "brand": state.config.brand, "sso": sso.is_some(), "sso_label": sso.map(|s| s.label.clone()), "sso_url": sso.map(|s| s.base_url.clone()) });
     let Some(s) = auth::current(&state, &headers).await? else { return Ok(Json(json!({ "authenticated": false, "site": site }))) };
     Ok(Json(json!({
         "authenticated": true,

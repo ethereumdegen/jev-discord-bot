@@ -108,7 +108,7 @@ async fn nobody_manages_a_server_they_dont_run() {
     discord_user(&stubs, "111", "owner@example.com", json!([{ "id": "g1", "name": "Builders", "icon": null, "owner": true, "permissions": "0" }]));
     let owner = Browser::new(s);
     owner.discord("sign_in", "code-o").await;
-    let no_csrf = Browser { app: owner.app.clone(), cookies: std::sync::Arc::new(std::sync::Mutex::new(owner.cookies.lock().unwrap().clone())) };
+    let no_csrf = Browser { app: owner.app.clone(), cookies: std::sync::Arc::new(std::sync::Mutex::new(owner.cookies.lock().unwrap().clone())), ..Browser::new(s) };
     no_csrf.cookies.lock().unwrap().remove("dg_csrf");
     assert_eq!(no_csrf.patch("/api/servers/g1", json!({ "mode": "enforce" })).await.status, StatusCode::FORBIDDEN);
     let saved = owner.patch("/api/servers/g1", json!({ "mode": "enforce" })).await;
@@ -123,4 +123,64 @@ async fn nobody_manages_a_server_they_dont_run() {
     assert_eq!(servers["servers"][0]["allowance"], 10_000);
     assert_eq!(op.patch("/api/operator/servers/g1", json!({ "monthly_allowance": 250000 })).await.status, StatusCode::NO_CONTENT);
     assert_eq!(op.get("/api/servers/g1").await.json()["month"]["allowance"], 250000);
+}
+
+/// Signing in is degenbuilders.com's job: the browser carries a code back here,
+/// we swap it for the identity over the back channel, and this site opens its
+/// own session. A silent check signs you in the moment you land, and says so
+/// once when nobody is signed in over there.
+#[tokio::test]
+async fn degen_builders_signs_people_in() {
+    let (w, stubs) = world().await;
+    let s = &w.state;
+
+    // The sign-in the site offers is Degen Builders'.
+    let anonymous = Browser::new(s);
+    let site = anonymous.get("/api/me").await.json();
+    assert_eq!(site["authenticated"], false);
+    assert_eq!(site["site"]["sso"], true);
+    assert_eq!(site["site"]["sso_label"], "Degen Builders");
+
+    // Signed in over there: landing here signs you in here, silently.
+    let alice = Browser::new(s);
+    let landed = alice.sso("/servers", true).await;
+    assert_eq!(landed.location(), "/servers");
+    let me = alice.get("/api/me").await.json();
+    assert_eq!(me["authenticated"], true);
+    assert_eq!(me["account"]["name"], "builder");
+    assert_eq!(me["account"]["email"], "builder@example.com");
+    assert_eq!(count(&w.builders, "POST", "/api/v1/sso/token"), 1);
+
+    // A second silent check while signed in here never leaves the site.
+    assert_eq!(alice.sso("/servers", true).await.location(), "/servers");
+    assert_eq!(count(&w.builders, "POST", "/api/v1/sso/token"), 1, "no second round trip");
+
+    // Signing in again is the same account, not a second one.
+    let same_person = Browser::new(s);
+    same_person.sso("/servers", false).await;
+    let accounts: i64 = sqlx::query_scalar("SELECT count(*) FROM accounts").fetch_one(&s.pool).await.unwrap();
+    assert_eq!(accounts, 1);
+
+    // Signed out over there, the silent check comes back marked, not signed in.
+    let visitor = Browser::new(s);
+    visitor.signed_out_there.store(true, std::sync::atomic::Ordering::Relaxed);
+    let quiet = visitor.sso("/servers", true).await;
+    assert_eq!(quiet.location(), "/servers?sso=none");
+    assert_eq!(visitor.get("/api/me").await.json()["authenticated"], false);
+
+    // The code is one-time and the state can't be replayed.
+    let replay = Browser::new(s);
+    let started = replay.get("/api/auth/sso/start?return_to=/servers").await;
+    let url = url::Url::parse(&started.location()).unwrap();
+    let state = url.query_pairs().find(|(k, _)| k == "state").unwrap().1.into_owned();
+    assert_eq!(replay.get(&format!("/api/auth/sso/callback?code=sso-code-1&state={state}")).await.location(), "/servers");
+    assert_eq!(replay.get(&format!("/api/auth/sso/callback?code=sso-code-1&state={state}")).await.location(), "/?error=sso");
+
+    // A Builders account and a Discord sign-in with the same verified email are
+    // one person: she links Discord and her servers show up.
+    discord_user(&stubs, "111", "builder@example.com", json!([{ "id": "g1", "name": "Builders", "icon": null, "owner": true, "permissions": "0" }]));
+    alice.discord("connect", "code-a").await;
+    let list = alice.get("/api/servers").await.json();
+    assert_eq!(list["discord_connected"], true);
+    assert_eq!(list["servers"].as_array().unwrap().len(), 1);
 }

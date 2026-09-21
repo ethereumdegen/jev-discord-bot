@@ -9,7 +9,7 @@ kicked or banned on a ladder the server owner sets; everything lands in an audit
 
 ## 1. How an owner uses it
 
-1. **Sign in with Google** on the bot's website.
+1. **Sign in with your Degen Builders account** on the bot's website.
 2. **Add to Discord.** One Discord OAuth screen does two things: installs the bot in the
    server they pick (scopes `bot applications.commands`, permissions Manage Messages, Kick,
    Ban, Moderate Members, View Channels, Read Message History) and tells us who they are on
@@ -90,7 +90,7 @@ a 7-day grace period.
 ## 5. Services
 
 ```
-jev-bot-web      Axum + React: Google sign-in, "Add to Discord", server settings, audit log
+jev-bot-web      Axum + React: Degen Builders sign-in, "Add to Discord", server settings, audit log
 jev-bot-gateway  holds the Discord gateway for every server (sharded as it grows); pushes messages to Redis
 jev-bot-worker   pops messages, calls Jev, applies the ladder, writes Neon, calls Discord REST
 Neon · Upstash · Jev (TypeSafe) · Discord
@@ -118,7 +118,7 @@ move from environment variables to per-server rows.
 | **J0** | done: the engine for one server |
 | **J1** | done: multi-tenant schema; the engine reads per-server settings |
 | **J2** | done: the ladder, "couldn't act", strike expiry |
-| **J3** | done: website with Google or Discord sign-in, Add to Discord with an ownership check, settings |
+| **J3** | done: website with Degen Builders or Discord sign-in, Add to Discord with an ownership check, settings |
 | **J4** | done: audit log with filters, paging, review tab, user history, undo and take-action, CSV |
 | **J5** | done: Redis stream queue, settings cache, cooldowns, dedupe, monthly allowance (free tier, 2,000/server, operator can raise) |
 | **J6** | billing: **not needed yet** (the owner pays for Jev; allowances are set by the operator) |
@@ -134,8 +134,11 @@ Degen Builders' server becomes the first tenant.
 - **Defaults chosen:** 2,000 judged messages per server per month (the operator raises it);
   past it the bot keeps logging nothing new and tells the log channel once; warnings are a
   channel notice that deletes itself after a minute; new servers start in watch mode.
-- **Sign-in:** Discord or Google. Only Discord can prove which servers you manage, so Google
-  accounts connect Discord before they see servers.
+- **Sign-in:** Degen Builders or Discord. This site keeps no sign-in of its own: it sends the
+  browser to degenbuilders.com (`/api/v1/sso/authorize`) and swaps the code it carries back for
+  the identity over a back channel (`SSO_CLIENT_ID` / `SSO_CLIENT_SECRET`). Land here already
+  signed in there and you're signed in here, silently, once per tab. Only Discord can prove
+  which servers you manage, so a Builders account connects Discord before it sees servers.
 - **Every judged message is one Jev call** (a kind choice and a lure yes/no, with the server's
   own description of what's normal there).
 - **Tests:** 4 unit + 7 integration (pgtemp + a real `redis-server`, stand-ins for Jev and
@@ -146,7 +149,7 @@ Degen Builders' server becomes the first tenant.
   connection with everything else and timed out (and stalled other calls behind it). Workers now
   read on their own connection; the test blocks longer than the old timeout.
 - **Never touched real:** Discord (OAuth, the gateway, slash commands, buttons, kicks and bans),
-  the real Jev API and how good its verdicts are, Google sign-in, Upstash, Neon, the Docker build.
+  the real Jev API and how good its verdicts are, the Degen Builders hand-off, Upstash, Neon, the Docker build.
 
 **To go live (J8):** a Discord application and bot (Message Content intent on), a new Railway
 project with the three services, a Neon database, an Upstash Redis, the Jev key, and DNS for

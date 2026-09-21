@@ -20,7 +20,7 @@ use axum::{
 use chrono::{Duration, Utc};
 use http_body_util::BodyExt;
 use jev_discord_bot::{
-    config::{Config, DiscordConfig},
+    config::{Config, DiscordConfig, SsoConfig},
     guilds,
     hot::Hot,
     http,
@@ -34,6 +34,7 @@ use tower::ServiceExt;
 pub struct World {
     pub state: AppState,
     pub discord: Calls,
+    pub builders: Calls,
     _pg: pgtemp::PgTempDB,
     _redis: RedisServer,
 }
@@ -103,6 +104,49 @@ async fn jev() -> String {
     format!("{}/", serve(Router::new().route("/", post(evaluate))).await)
 }
 
+/// Degen Builders as the identity provider: `/api/v1/sso/authorize` hands a
+/// code straight back (or `login_required` when `data["signed_out"]` is set),
+/// `/api/v1/sso/token` swaps it for the identity in `data["builders_user"]`.
+async fn builders(data: Arc<Mutex<HashMap<String, Value>>>) -> (String, Calls) {
+    let calls: Calls = Arc::default();
+    let (recorded, authorize_data, token_data) = (calls.clone(), data.clone(), data);
+    let router = Router::new()
+        .route(
+            "/api/v1/sso/authorize",
+            axum::routing::get(move |uri: Uri| {
+                let data = authorize_data.clone();
+                async move {
+                    let query: HashMap<String, String> = url::form_urlencoded::parse(uri.query().unwrap_or("").as_bytes()).into_owned().collect();
+                    let (redirect_uri, state) = (query["redirect_uri"].clone(), query.get("state").cloned().unwrap_or_default());
+                    let signed_out = data.lock().unwrap().get("signed_out").is_some();
+                    let back = if signed_out {
+                        format!("{redirect_uri}?error=login_required&state={state}")
+                    } else {
+                        format!("{redirect_uri}?code=sso-code-1&state={state}")
+                    };
+                    (StatusCode::FOUND, [(header::LOCATION, back)])
+                }
+            }),
+        )
+        .route(
+            "/api/v1/sso/token",
+            post(move |Json(body): Json<Value>| {
+                let (data, recorded) = (token_data.clone(), recorded.clone());
+                async move {
+                    recorded.lock().unwrap().push(("POST".into(), "/api/v1/sso/token".into(), body.to_string()));
+                    if body["client_secret"] != json!("builders-secret-for-tests") || body["code"] != json!("sso-code-1") {
+                        return StatusCode::FORBIDDEN.into_response();
+                    }
+                    let identity = data.lock().unwrap().get("builders_user").cloned().unwrap_or_else(
+                        || json!({ "subject": "11111111-1111-4111-8111-111111111111", "email": "builder@example.com", "handle": "builder", "avatar_url": null }),
+                    );
+                    Json(json!({ "identity": identity })).into_response()
+                }
+            }),
+        );
+    (serve(router).await, calls)
+}
+
 pub type Calls = Arc<Mutex<Vec<(String, String, String)>>>;
 
 pub fn count(calls: &Calls, method: &str, path: &str) -> usize {
@@ -164,6 +208,7 @@ pub async fn world() -> (World, Stubs) {
     let (redis_url, redis) = redis_server().await;
     let data: Arc<Mutex<HashMap<String, Value>>> = Arc::default();
     let (discord_base, calls) = discord(data.clone()).await;
+    let (builders_base, builders_calls) = builders(data.clone()).await;
     let config = Config {
         brand: "Degen Guard".into(),
         base_url: "http://localhost:3120".into(),
@@ -179,7 +224,12 @@ pub async fn world() -> (World, Stubs) {
             api_base: discord_base,
             authorize_base: "https://discord.test".into(),
         },
-        google: None,
+        sso: Some(SsoConfig {
+            base_url: builders_base,
+            client_id: "degen-guard".into(),
+            client_secret: "builders-secret-for-tests".into(),
+            label: "Degen Builders".into(),
+        }),
         typesafe_api_key: "ts_test".into(),
         typesafe_endpoint: Some(jev().await),
         operator_emails: vec!["op@example.com".into()],
@@ -187,7 +237,7 @@ pub async fn world() -> (World, Stubs) {
     };
     let hot = Hot::connect(&redis_url).await.unwrap();
     let state = AppState::new(config, pool, hot).unwrap();
-    (World { state, discord: calls, _pg: pg, _redis: redis }, Stubs { data })
+    (World { state, discord: calls, builders: builders_calls, _pg: pg, _redis: redis }, Stubs { data })
 }
 
 impl World {
@@ -227,6 +277,8 @@ pub fn message(guild: &str, id: &str, author: &str, text: &str, roles: &[&str], 
 pub struct Browser {
     pub app: Router,
     pub cookies: Arc<Mutex<HashMap<String, String>>>,
+    /// Nobody is signed in at degenbuilders.com in this browser.
+    pub signed_out_there: Arc<std::sync::atomic::AtomicBool>,
 }
 
 pub struct Reply {
@@ -249,7 +301,7 @@ impl Reply {
 
 impl Browser {
     pub fn new(state: &AppState) -> Self {
-        Self { app: http::app(state.clone()), cookies: Arc::default() }
+        Self { app: http::app(state.clone()), cookies: Arc::default(), signed_out_there: Arc::default() }
     }
 
     pub async fn send(&self, method: Method, path: &str, body: Option<Value>) -> Reply {
@@ -290,6 +342,31 @@ impl Browser {
     }
     pub async fn patch(&self, path: &str, body: Value) -> Reply {
         self.send(Method::PATCH, path, Some(body)).await
+    }
+
+    /// Continue with Degen Builders: start the hand-off, then come back the way
+    /// degenbuilders.com would (with a code, or `login_required` when signed out
+    /// there and the check was silent).
+    pub async fn sso(&self, return_to: &str, silent: bool) -> Reply {
+        let query = format!("return_to={return_to}{}", if silent { "&silent=1" } else { "" });
+        let started = self.get(&format!("/api/auth/sso/start?{query}")).await;
+        assert_eq!(started.status, StatusCode::FOUND, "{}", started.text());
+        let location = started.location();
+        if location.starts_with('/') {
+            return started; // already signed in here: a silent check went straight back
+        }
+        let url = url::Url::parse(&location).unwrap();
+        assert_eq!(url.path(), "/api/v1/sso/authorize");
+        let pairs: HashMap<String, String> = url.query_pairs().into_owned().collect();
+        assert_eq!(pairs["client_id"], "degen-guard");
+        assert_eq!(pairs.get("prompt").map(String::as_str), silent.then_some("none"));
+        let state = &pairs["state"];
+        let answer = if silent && self.signed_out_there.load(std::sync::atomic::Ordering::Relaxed) {
+            format!("error=login_required&state={state}")
+        } else {
+            format!("code=sso-code-1&state={state}")
+        };
+        self.get(&format!("/api/auth/sso/callback?{answer}")).await
     }
 
     /// Continue with Discord (purpose sign_in/connect/install), as the stub user in `stubs`.

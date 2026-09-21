@@ -1,13 +1,11 @@
-//! Google sign-in, and three Discord round trips that share one callback:
+//! Sign-in through Degen Builders, and three Discord round trips that share one
+//! callback:
 //! `sign_in` (Continue with Discord), `connect` (a signed-in account links
 //! Discord and we learn which servers it manages) and `install` (Add to
 //! Discord: the bot joins a server, and the same screen proves who added it).
 
 use axum::http::HeaderMap;
-use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
 use serde::Deserialize;
-use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
 use crate::{
@@ -26,12 +24,12 @@ pub struct Started {
 struct Attempt {
     purpose: String,
     account_id: Option<Uuid>,
-    nonce: String,
-    pkce_verifier: String,
     return_path: String,
 }
 
-async fn begin(state: &AppState, provider: &str, purpose: &str, account_id: Option<Uuid>, return_path: &str) -> ApiResult<(String, String, String, String)> {
+/// Remember a round trip we started, and hand back the `state` the other side
+/// echoes and the `browser` value its cookie carries.
+async fn begin(state: &AppState, provider: &str, purpose: &str, account_id: Option<Uuid>, return_path: &str) -> ApiResult<(String, String)> {
     let (oauth_state, browser, nonce, verifier) = (auth::random_token(), auth::random_token(), auth::random_token(), auth::random_token());
     sqlx::query(
         "INSERT INTO oauth_attempts(state_hash,provider,purpose,account_id,browser_hash,nonce,pkce_verifier,return_path,expires_at)
@@ -47,114 +45,89 @@ async fn begin(state: &AppState, provider: &str, purpose: &str, account_id: Opti
     .bind(auth::safe_return(return_path))
     .execute(&state.pool)
     .await?;
-    Ok((oauth_state, browser, nonce, verifier))
+    Ok((oauth_state, browser))
 }
 
 async fn consume(state: &AppState, headers: &HeaderMap, provider: &str, oauth_state: &str) -> ApiResult<Attempt> {
     let browser = auth::cookie(headers, auth::OAUTH_COOKIE).ok_or(ApiError::Forbidden)?;
-    let row: Option<(String, Option<Uuid>, String, String, String)> = sqlx::query_as(
+    let row: Option<(String, Option<Uuid>, String)> = sqlx::query_as(
         "UPDATE oauth_attempts SET consumed_at=now() WHERE state_hash=$1 AND browser_hash=$2 AND provider=$3 AND consumed_at IS NULL AND expires_at>now()
-         RETURNING purpose,account_id,nonce,pkce_verifier,return_path",
+         RETURNING purpose,account_id,return_path",
     )
     .bind(auth::hash(oauth_state))
     .bind(auth::hash(&browser))
     .bind(provider)
     .fetch_optional(&state.pool)
     .await?;
-    let (purpose, account_id, nonce, pkce_verifier, return_path) = row.ok_or(ApiError::Forbidden)?;
-    Ok(Attempt { purpose, account_id, nonce, pkce_verifier, return_path })
+    let (purpose, account_id, return_path) = row.ok_or(ApiError::Forbidden)?;
+    Ok(Attempt { purpose, account_id, return_path })
 }
 
-// Google -------------------------------------------------------------------------------
+// Degen Builders -----------------------------------------------------------------------
 
-pub async fn begin_google(state: &AppState, return_path: &str) -> ApiResult<Started> {
-    let google = state.config.google.as_ref().ok_or(ApiError::Unavailable("Google sign-in"))?;
-    let (oauth_state, browser, nonce, verifier) = begin(state, "google", "sign_in", None, return_path).await?;
-    let challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes()));
-    let mut url = url::Url::parse("https://accounts.google.com/o/oauth2/v2/auth").map_err(anyhow::Error::from)?;
+/// Where a browser goes to be signed in by degenbuilders.com. `silent` asks
+/// whether there's already a session there without showing a sign-in screen.
+pub async fn begin_sso(state: &AppState, return_path: &str, silent: bool) -> ApiResult<Started> {
+    let sso = state.config.sso.as_ref().ok_or(ApiError::Unavailable("Sign-in"))?;
+    let (oauth_state, browser) = begin(state, "builders", "sign_in", None, return_path).await?;
+    let mut url = url::Url::parse(&format!("{}/api/v1/sso/authorize", sso.base_url)).map_err(anyhow::Error::from)?;
     url.query_pairs_mut()
-        .append_pair("client_id", &google.client_id)
-        .append_pair("redirect_uri", &format!("{}/api/auth/google/callback", state.config.base_url))
-        .append_pair("response_type", "code")
-        .append_pair("scope", "openid email profile")
-        .append_pair("state", &oauth_state)
-        .append_pair("nonce", &nonce)
-        .append_pair("code_challenge", &challenge)
-        .append_pair("code_challenge_method", "S256")
-        .append_pair("prompt", "select_account");
+        .append_pair("client_id", &sso.client_id)
+        .append_pair("redirect_uri", &sso_redirect(state))
+        .append_pair("state", &oauth_state);
+    if silent {
+        url.query_pairs_mut().append_pair("prompt", "none");
+    }
     Ok(Started { url: url.into(), browser })
 }
 
+/// Degen Builders said nobody is signed in there. Burn the attempt and say
+/// where the browser was headed, so a silent try lands back where it started.
+pub async fn abandon_sso(state: &AppState, headers: &HeaderMap, oauth_state: &str) -> ApiResult<String> {
+    Ok(consume(state, headers, "builders", oauth_state).await?.return_path)
+}
+
+fn sso_redirect(state: &AppState) -> String {
+    format!("{}/api/auth/sso/callback", state.config.base_url)
+}
+
 #[derive(Deserialize)]
-struct GoogleClaims {
-    sub: String,
-    nonce: String,
+struct SsoIdentity {
+    subject: String,
     email: Option<String>,
-    email_verified: Option<bool>,
-    name: Option<String>,
-    picture: Option<String>,
+    handle: String,
+    avatar_url: Option<String>,
 }
 
-/// Check a Google ID token: RS256, signed by a key in Google's set, for our
-/// client, from Google, unexpired, with our nonce and a verified email.
-fn verify_google_id_token(id_token: &str, jwks: &JwkSet, client_id: &str, nonce: &str) -> Result<GoogleClaims, &'static str> {
-    let header = decode_header(id_token).map_err(|_| "not a JWT")?;
-    if header.alg != Algorithm::RS256 {
-        return Err("not RS256");
-    }
-    let kid = header.kid.ok_or("no key id")?;
-    let key = DecodingKey::from_jwk(jwks.find(&kid).ok_or("unknown key id")?).map_err(|_| "unusable key")?;
-    let mut validation = Validation::new(Algorithm::RS256);
-    validation.set_audience(&[client_id]);
-    validation.set_issuer(&["https://accounts.google.com", "accounts.google.com"]);
-    let claims = decode::<GoogleClaims>(id_token, &key, &validation).map_err(|_| "signature, audience, issuer or expiry is wrong")?.claims;
-    if claims.nonce != nonce {
-        return Err("wrong nonce");
-    }
-    if claims.email_verified != Some(true) {
-        return Err("email not verified");
-    }
-    Ok(claims)
+#[derive(Deserialize)]
+struct SsoToken {
+    identity: SsoIdentity,
 }
 
-pub async fn finish_google(state: &AppState, headers: &HeaderMap, code: &str, oauth_state: &str) -> ApiResult<(String, NewSession)> {
-    let google = state.config.google.as_ref().ok_or(ApiError::Unavailable("Google sign-in"))?;
-    let attempt = consume(state, headers, "google", oauth_state).await?;
-    let redirect = format!("{}/api/auth/google/callback", state.config.base_url);
+/// Swap the code the browser carried for the identity behind it, over a back
+/// channel with our own secret, and open a session here.
+pub async fn finish_sso(state: &AppState, headers: &HeaderMap, code: &str, oauth_state: &str) -> ApiResult<(String, NewSession)> {
+    let sso = state.config.sso.as_ref().ok_or(ApiError::Unavailable("Sign-in"))?;
+    let attempt = consume(state, headers, "builders", oauth_state).await?;
     let response = state
         .http
-        .post("https://oauth2.googleapis.com/token")
-        .form(&[
-            ("client_id", google.client_id.as_str()),
-            ("client_secret", google.client_secret.as_str()),
-            ("code", code),
-            ("code_verifier", attempt.pkce_verifier.as_str()),
-            ("grant_type", "authorization_code"),
-            ("redirect_uri", redirect.as_str()),
-        ])
+        .post(format!("{}/api/v1/sso/token", sso.base_url))
+        .json(&serde_json::json!({ "client_id": sso.client_id, "client_secret": sso.client_secret, "code": code }))
         .send()
         .await
-        .map_err(|_| ApiError::Unavailable("Google sign-in"))?;
+        .map_err(|_| ApiError::Unavailable("Sign-in"))?;
     if !response.status().is_success() {
+        tracing::warn!(status = %response.status(), "Degen Builders refused the sign-in code");
         return Err(ApiError::Forbidden);
     }
-    let token: serde_json::Value = response.json().await.map_err(|_| ApiError::Forbidden)?;
-    let id_token = token["id_token"].as_str().ok_or(ApiError::Forbidden)?;
-    let jwks: JwkSet = state
-        .http
-        .get("https://www.googleapis.com/oauth2/v3/certs")
-        .send()
-        .await
-        .map_err(|_| ApiError::Unavailable("Google sign-in"))?
-        .json()
-        .await
-        .map_err(|_| ApiError::Forbidden)?;
-    let claims = verify_google_id_token(id_token, &jwks, &google.client_id, &attempt.nonce).map_err(|reason| {
-        tracing::warn!(%reason, "Google ID token refused");
-        ApiError::Forbidden
-    })?;
-    let name = claims.name.clone().or_else(|| claims.email.clone()).unwrap_or_else(|| "Someone".into());
-    let identity = Identity { provider: "google", subject: claims.sub, email: claims.email, name, avatar_url: claims.picture };
+    let token: SsoToken = response.json().await.map_err(|_| ApiError::Forbidden)?;
+    let identity = Identity {
+        provider: "builders",
+        subject: token.identity.subject,
+        email: token.identity.email,
+        name: token.identity.handle,
+        avatar_url: token.identity.avatar_url,
+    };
     let account = auth::account_for(state, &identity).await?;
     Ok((attempt.return_path, auth::open_session(state, account).await?))
 }
@@ -167,7 +140,7 @@ fn discord_redirect(state: &AppState) -> String {
 
 /// `purpose`: sign_in, connect (needs `account_id`) or install.
 pub async fn begin_discord(state: &AppState, purpose: &str, account_id: Option<Uuid>, return_path: &str) -> ApiResult<Started> {
-    let (oauth_state, browser, _, _) = begin(state, "discord", purpose, account_id, return_path).await?;
+    let (oauth_state, browser) = begin(state, "discord", purpose, account_id, return_path).await?;
     let url = state.discord.authorize_url(&discord_redirect(state), &oauth_state, purpose == "install");
     Ok(Started { url, browser })
 }
@@ -238,46 +211,4 @@ async fn link_discord(state: &AppState, account_id: Uuid, user: &User, guilds: &
     }
     tx.commit().await?;
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use jsonwebtoken::{EncodingKey, Header, encode};
-    use serde_json::json;
-
-    use super::*;
-
-    const PEM: &str = include_str!("../tests/fixtures/google_test_rsa.pem");
-    const N: &str = include_str!("../tests/fixtures/google_test_rsa.n");
-
-    fn jwks() -> JwkSet {
-        serde_json::from_value(json!({ "keys": [{ "kty": "RSA", "alg": "RS256", "use": "sig", "kid": "k1", "n": N.trim(), "e": "AQAB" }] })).unwrap()
-    }
-
-    fn token(claims: serde_json::Value, kid: &str) -> String {
-        let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(kid.into());
-        encode(&header, &claims, &EncodingKey::from_rsa_pem(PEM.as_bytes()).unwrap()).unwrap()
-    }
-
-    fn claims() -> serde_json::Value {
-        json!({ "iss": "https://accounts.google.com", "aud": "client-1", "sub": "g-123", "exp": chrono::Utc::now().timestamp() + 600,
-                "nonce": "n1", "email": "mod@example.com", "email_verified": true, "name": "Mod" })
-    }
-
-    /// The real RS256 path production uses: this panicked before a crypto backend was chosen.
-    #[test]
-    fn a_google_id_token_is_verified_against_the_key_set() {
-        let good = verify_google_id_token(&token(claims(), "k1"), &jwks(), "client-1", "n1").unwrap();
-        assert_eq!((good.sub.as_str(), good.email.as_deref()), ("g-123", Some("mod@example.com")));
-        assert_eq!(verify_google_id_token(&token(claims(), "k1"), &jwks(), "client-1", "other").err(), Some("wrong nonce"));
-        assert!(verify_google_id_token(&token(claims(), "k1"), &jwks(), "client-2", "n1").is_err());
-        assert_eq!(verify_google_id_token(&token(claims(), "k9"), &jwks(), "client-1", "n1").err(), Some("unknown key id"));
-        let mut unverified = claims();
-        unverified["email_verified"] = json!(false);
-        assert_eq!(verify_google_id_token(&token(unverified, "k1"), &jwks(), "client-1", "n1").err(), Some("email not verified"));
-        let mut expired = claims();
-        expired["exp"] = json!(chrono::Utc::now().timestamp() - 3600);
-        assert!(verify_google_id_token(&token(expired, "k1"), &jwks(), "client-1", "n1").is_err());
-    }
 }

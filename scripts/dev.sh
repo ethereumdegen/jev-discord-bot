@@ -6,7 +6,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 # Your Jev key (and anything else) from .env; without one, the Jev stand-in answers.
 if [ -f .env ]; then set -a; . ./.env; set +a; fi
-unset APP_ENV APP_BASE_URL DATABASE_URL REDIS_URL DISCORD_CLIENT_ID DISCORD_CLIENT_SECRET DISCORD_BOT_TOKEN GOOGLE_CLIENT_ID GOOGLE_CLIENT_SECRET
+unset APP_ENV APP_BASE_URL DATABASE_URL REDIS_URL DISCORD_CLIENT_ID DISCORD_CLIENT_SECRET DISCORD_BOT_TOKEN SSO_BASE_URL SSO_CLIENT_ID SSO_CLIENT_SECRET
 export PORT="${PORT:-3120}" STATIC_DIR="$PWD/frontend/dist"
 export DATABASE_URL="${DATABASE_URL:-postgres://127.0.0.1:5432/degen_guard_dev}"
 export REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6391}"

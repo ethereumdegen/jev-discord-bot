@@ -4,7 +4,7 @@ import { useMe } from '../hooks/api'
 
 const ERRORS: Record<string, string> = {
   discord: "Discord sign-in didn't finish. Try again.",
-  google: "Google sign-in didn't finish. Try again.",
+  sso: "Degen Builders sign-in didn't finish. Try again.",
 }
 
 export function HomePage() {

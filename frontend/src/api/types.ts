@@ -1,6 +1,6 @@
 export interface Me {
   authenticated: boolean
-  site: { brand: string; google: boolean }
+  site: { brand: string; sso: boolean; sso_label: string | null; sso_url: string | null }
   account?: {
     id: string
     name: string
