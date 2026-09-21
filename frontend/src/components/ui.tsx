@@ -106,7 +106,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <footer className="site-footer">
         <div className="page row between">
           <span className="mono">&gt;_ degen guard · judged by Jev</span>
-          <a href="https://degenbuilders.com">degenbuilders.com</a>
+          <a href={site?.sso_url ?? 'https://degenbuilders.com'}>{(site?.sso_url ?? 'https://degenbuilders.com').replace(/^https:\/\//, '')}</a>
         </div>
       </footer>
     </HandingOff.Provider>
