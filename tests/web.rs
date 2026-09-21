@@ -17,13 +17,15 @@ async fn an_owner_adds_the_bot_configures_it_and_reads_the_log() {
     let alice = Browser::new(s);
     assert_eq!(alice.get("/api/servers").await.status, StatusCode::UNAUTHORIZED);
 
-    // Alice signs in with Discord; she manages g1 and is only a member of g2.
+    // Alice signs in at Degen Builders, then links Discord: she manages g1 and
+    // is only a member of g2.
+    builders_user(&stubs, "u-alice", "alice@example.com", "alice");
     discord_user(&stubs, "111", "alice@example.com", json!([
         { "id": "g1", "name": "Builders", "icon": null, "owner": false, "permissions": MANAGE },
         { "id": "g2", "name": "Elsewhere", "icon": null, "owner": false, "permissions": "0" }
     ]));
-    let signed_in = alice.discord("sign_in", "code-a").await;
-    assert_eq!(signed_in.location(), "/servers");
+    assert_eq!(alice.sso("/servers", false).await.location(), "/servers");
+    assert_eq!(alice.discord("connect", "code-a").await.location(), "/servers");
     let me = alice.get("/api/me").await.json();
     assert_eq!(me["account"]["discord_username"], "user111");
     let list = alice.get("/api/servers").await.json();
@@ -96,8 +98,10 @@ async fn nobody_manages_a_server_they_dont_run() {
     let s = &w.state;
     w.install("g1", "owner").await;
     let bob = Browser::new(s);
+    builders_user(&stubs, "u-bob", "bob@example.com", "bob");
     discord_user(&stubs, "222", "bob@example.com", json!([{ "id": "g1", "name": "Builders", "icon": null, "owner": false, "permissions": "2048" }]));
-    bob.discord("sign_in", "code-b").await;
+    bob.sso("/servers", false).await;
+    bob.discord("connect", "code-b").await;
     assert_eq!(bob.get("/api/servers/g1").await.status, StatusCode::FORBIDDEN);
     assert_eq!(bob.patch("/api/servers/g1", json!({ "mode": "paused" })).await.status, StatusCode::FORBIDDEN);
     // Nor can he install the bot there.
@@ -105,9 +109,11 @@ async fn nobody_manages_a_server_they_dont_run() {
     assert_eq!(refused.location(), "/servers?error=not_manager");
 
     // Writes need the CSRF token.
+    builders_user(&stubs, "u-owner", "owner@example.com", "owner");
     discord_user(&stubs, "111", "owner@example.com", json!([{ "id": "g1", "name": "Builders", "icon": null, "owner": true, "permissions": "0" }]));
     let owner = Browser::new(s);
-    owner.discord("sign_in", "code-o").await;
+    owner.sso("/servers", false).await;
+    owner.discord("connect", "code-o").await;
     let no_csrf = Browser { app: owner.app.clone(), cookies: std::sync::Arc::new(std::sync::Mutex::new(owner.cookies.lock().unwrap().clone())), ..Browser::new(s) };
     no_csrf.cookies.lock().unwrap().remove("dg_csrf");
     assert_eq!(no_csrf.patch("/api/servers/g1", json!({ "mode": "enforce" })).await.status, StatusCode::FORBIDDEN);
@@ -116,9 +122,9 @@ async fn nobody_manages_a_server_they_dont_run() {
 
     // The operator sees every server and raises an allowance; nobody else can.
     assert_eq!(owner.get("/api/operator/servers").await.status, StatusCode::FORBIDDEN);
-    discord_user(&stubs, "333", "op@example.com", json!([]));
+    builders_user(&stubs, "u-op", "op@example.com", "op");
     let op = Browser::new(s);
-    op.discord("sign_in", "code-op").await;
+    op.sso("/servers", false).await;
     let servers = op.get("/api/operator/servers").await.json();
     assert_eq!(servers["servers"][0]["allowance"], 10_000);
     assert_eq!(op.patch("/api/operator/servers/g1", json!({ "monthly_allowance": 250000 })).await.status, StatusCode::NO_CONTENT);
@@ -133,25 +139,27 @@ async fn a_discord_account_takes_its_servers_when_it_moves() {
     let (w, stubs) = world().await;
     let s = &w.state;
     w.install("g1", "111").await;
+
+    // Alice signs in and links Discord 111: her account manages g1.
+    builders_user(&stubs, "u-alice", "alice@example.com", "alice");
     discord_user(&stubs, "111", "alice@example.com", json!([{ "id": "g1", "name": "Builders", "icon": null, "owner": true, "permissions": "0" }]));
+    let alice = Browser::new(s);
+    alice.sso("/servers", false).await;
+    alice.discord("connect", "code-a").await;
+    assert_eq!(alice.get("/api/servers/g1").await.status, StatusCode::OK);
 
-    // Signed in with Discord alone: that account manages g1.
-    let discord_only = Browser::new(s);
-    discord_only.discord("sign_in", "code-a").await;
-    assert_eq!(discord_only.get("/api/servers/g1").await.status, StatusCode::OK);
-
-    // The same Discord account is then connected to a Degen Builders account,
-    // which is someone else as far as this site can tell: another email.
-    let builders = Browser::new(s);
-    builders.sso("/servers", false).await;
-    builders.discord("connect", "code-b").await;
-    assert_eq!(builders.get("/api/servers/g1").await.status, StatusCode::OK);
+    // The same Discord account is then linked to somebody else's account here.
+    builders_user(&stubs, "u-bob", "bob@example.com", "bob");
+    let bob = Browser::new(s);
+    bob.sso("/servers", false).await;
+    bob.discord("connect", "code-b").await;
+    assert_eq!(bob.get("/api/servers/g1").await.status, StatusCode::OK);
 
     // The account it left manages nothing now, though its session still works.
-    assert_eq!(discord_only.get("/api/me").await.json()["authenticated"], true);
-    assert_eq!(discord_only.get("/api/servers/g1").await.status, StatusCode::FORBIDDEN);
-    assert_eq!(discord_only.patch("/api/servers/g1", json!({ "mode": "enforce" })).await.status, StatusCode::FORBIDDEN);
-    assert_eq!(discord_only.get("/api/servers").await.json()["servers"].as_array().unwrap().len(), 0);
+    assert_eq!(alice.get("/api/me").await.json()["authenticated"], true);
+    assert_eq!(alice.get("/api/servers/g1").await.status, StatusCode::FORBIDDEN);
+    assert_eq!(alice.patch("/api/servers/g1", json!({ "mode": "enforce" })).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(alice.get("/api/servers").await.json()["servers"].as_array().unwrap().len(), 0);
 }
 
 /// Signing in is degenbuilders.com's job: the browser carries a code back here,
@@ -205,8 +213,14 @@ async fn degen_builders_signs_people_in() {
     assert_eq!(replay.get(&format!("/api/auth/sso/callback?code=sso-code-1&state={state}")).await.location(), "/servers");
     assert_eq!(replay.get(&format!("/api/auth/sso/callback?code=sso-code-1&state={state}")).await.location(), "/?error=sso");
 
-    // A Builders account and a Discord sign-in with the same verified email are
-    // one person: she links Discord and her servers show up.
+    // Discord is not a way in: asking for it without a session sends the
+    // browser to the sign-in first, and nothing signs itself in on the way.
+    let stranger = Browser::new(s);
+    let sent = stranger.get("/api/auth/discord/start?return_to=/servers").await;
+    assert!(sent.location().starts_with("/api/auth/sso/start"), "{}", sent.location());
+    assert_eq!(stranger.get("/api/me").await.json()["authenticated"], false);
+
+    // Linking Discord to the account that is signed in: her servers show up.
     discord_user(&stubs, "111", "builder@example.com", json!([{ "id": "g1", "name": "Builders", "icon": null, "owner": true, "permissions": "0" }]));
     alice.discord("connect", "code-a").await;
     let list = alice.get("/api/servers").await.json();

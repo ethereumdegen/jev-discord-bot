@@ -118,7 +118,7 @@ move from environment variables to per-server rows.
 | **J0** | done: the engine for one server |
 | **J1** | done: multi-tenant schema; the engine reads per-server settings |
 | **J2** | done: the ladder, "couldn't act", strike expiry |
-| **J3** | done: website with Degen Builders or Discord sign-in, Add to Discord with an ownership check, settings |
+| **J3** | done: website with the Degen Builders sign-in, Discord linked afterwards, Add to Discord with an ownership check, settings |
 | **J4** | done: audit log with filters, paging, review tab, user history, undo and take-action, CSV |
 | **J5** | done: Redis stream queue, settings cache, cooldowns, dedupe, monthly allowance (free tier, 2,000/server, operator can raise) |
 | **J6** | billing: **not needed yet** (the owner pays for Jev; allowances are set by the operator) |
@@ -134,11 +134,13 @@ Degen Builders' server becomes the first tenant.
 - **Defaults chosen:** 2,000 judged messages per server per month (the operator raises it);
   past it the bot keeps logging nothing new and tells the log channel once; warnings are a
   channel notice that deletes itself after a minute; new servers start in watch mode.
-- **Sign-in:** Degen Builders or Discord. This site keeps no sign-in of its own: it sends the
-  browser to degenbuilders.com (`/api/v1/sso/authorize`) and swaps the code it carries back for
-  the identity over a back channel (`SSO_CLIENT_ID` / `SSO_CLIENT_SECRET`). Land here already
-  signed in there and you're signed in here, silently, once per tab. Only Discord can prove
-  which servers you manage, so a Builders account connects Discord before it sees servers.
+- **Sign-in:** Degen Builders, and nothing else. This site keeps no sign-in of its own: it
+  sends the browser to degenbuilders.com (`/api/v1/sso/authorize`, which is Google over there)
+  and swaps the code it carries back for the identity over a back channel (`SSO_CLIENT_ID` /
+  `SSO_CLIENT_SECRET`). Land here already signed in there and you're signed in here, silently,
+  once per tab. Discord is never a way in — it can't be, or one person ends up with two
+  accounts. You link it once signed in, because only Discord can prove which servers you
+  manage, and asking for it without a session goes to the sign-in first and comes back.
 - **Every judged message is one Jev call** (a kind choice and a lure yes/no, with the server's
   own description of what's normal there).
 - **Tests:** 4 unit + 7 integration (pgtemp + a real `redis-server`, stand-ins for Jev and

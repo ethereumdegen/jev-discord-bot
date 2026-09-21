@@ -1,18 +1,23 @@
 #!/usr/bin/env python3
-"""Stand-ins for Discord and Jev, for running Degen Guard locally.
+"""Stand-ins for Degen Builders, Discord and Jev, for running Degen Guard locally.
 
     python3 scripts/stubs.py 3121
 
-Discord: /oauth2/authorize sends the browser straight back signed in as
-"localdev", who manages the server "Local Builders" (g-local); the bot's REST
-calls are answered and printed. Jev: POST /jev answers by keywords ("free
-nitro" = scam, "buy my course" = spam, "check out my server" = borderline)."""
+Degen Builders: /api/v1/sso/authorize answers a silent ask with
+`login_required` until you press the sign-in once, then signs you in as
+"localdev" (dev@example.com, the operator) for the rest of the run.
+Discord: /oauth2/authorize sends the browser straight back as "localdev", who
+manages the server "Local Builders" (g-local); the bot's REST calls are
+answered and printed. Jev: POST /jev answers by keywords ("free nitro" = scam,
+"buy my course" = spam, "check out my server" = borderline)."""
 
 import json, sys, urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 3121
 GUILD = {"id": "g-local", "name": "Local Builders", "icon": None, "owner": True, "permissions": "8"}
+IDENTITY = {"subject": "localdev", "email": "dev@example.com", "handle": "localdev", "avatar_url": None}
+SIGNED_IN = False
 
 
 def verdict(text):
@@ -45,6 +50,13 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
         q = dict(urllib.parse.parse_qsl(url.query))
+        if url.path == "/api/v1/sso/authorize":
+            global SIGNED_IN
+            back = q["redirect_uri"] + ("&" if "?" in q["redirect_uri"] else "?")
+            if not SIGNED_IN and q.get("prompt") == "none":
+                return self.reply(302, headers=[("Location", back + urllib.parse.urlencode({"error": "login_required", "state": q.get("state", "")}))])
+            SIGNED_IN = True  # the sign-in screen over there, pressed
+            return self.reply(302, headers=[("Location", back + urllib.parse.urlencode({"code": "sso-x", "state": q.get("state", "")}))])
         if url.path == "/oauth2/authorize":
             install = "bot" in q.get("scope", "")
             back = {"code": ("install-" if install else "code-") + "x", "state": q["state"]}
@@ -67,6 +79,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         raw = self.body()
         path = urllib.parse.urlparse(self.path).path
+        if path == "/api/v1/sso/token":
+            return self.reply(200, {"identity": IDENTITY})
         if path == "/jev":
             text = json.loads(raw)["state"]["text"]
             kind, spam, scam, promo, lure = verdict(text)

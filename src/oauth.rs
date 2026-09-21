@@ -1,8 +1,10 @@
-//! Sign-in through Degen Builders, and three Discord round trips that share one
-//! callback:
-//! `sign_in` (Continue with Discord), `connect` (a signed-in account links
-//! Discord and we learn which servers it manages) and `install` (Add to
-//! Discord: the bot joins a server, and the same screen proves who added it).
+//! Sign-in through Degen Builders, and two Discord round trips that share one
+//! callback: `connect` (a signed-in account links Discord, and we learn which
+//! servers it manages) and `install` (Add to Discord: the bot joins a server,
+//! and the same screen proves who added it).
+//!
+//! Discord is never a way in. Accounts live at degenbuilders.com, which signs
+//! people in with Google; Discord only says which servers they run.
 
 use axum::http::HeaderMap;
 use serde::Deserialize;
@@ -138,53 +140,41 @@ fn discord_redirect(state: &AppState) -> String {
     format!("{}/api/auth/discord/callback", state.config.base_url)
 }
 
-/// `purpose`: sign_in, connect (needs `account_id`) or install.
-pub async fn begin_discord(state: &AppState, purpose: &str, account_id: Option<Uuid>, return_path: &str) -> ApiResult<Started> {
-    let (oauth_state, browser) = begin(state, "discord", purpose, account_id, return_path).await?;
+/// `purpose`: connect (link Discord to the account signing in) or install
+/// (add the bot, which proves who added it). Both need an account already:
+/// signing in is Degen Builders' job.
+pub async fn begin_discord(state: &AppState, purpose: &str, account_id: Uuid, return_path: &str) -> ApiResult<Started> {
+    let (oauth_state, browser) = begin(state, "discord", purpose, Some(account_id), return_path).await?;
     let url = state.discord.authorize_url(&discord_redirect(state), &oauth_state, purpose == "install");
     Ok(Started { url, browser })
 }
 
 pub struct DiscordDone {
     pub return_path: String,
-    /// A new session when this was a sign-in.
-    pub session: Option<NewSession>,
 }
 
 pub async fn finish_discord(state: &AppState, headers: &HeaderMap, code: &str, oauth_state: &str, installed_guild: Option<&str>) -> ApiResult<DiscordDone> {
     let attempt = consume(state, headers, "discord", oauth_state).await?;
+    // The attempt was started by a signed-in account; nothing here opens one.
+    let account_id = attempt.account_id.ok_or(ApiError::Forbidden)?;
     let token = state.discord.exchange_code(code, &discord_redirect(state)).await.map_err(|error| {
         tracing::warn!(?error, "Discord code exchange failed");
         ApiError::Forbidden
     })?;
     let user = state.discord.me(&token.access_token).await.map_err(|_| ApiError::Unavailable("Discord"))?;
     let guilds = state.discord.my_guilds(&token.access_token).await.map_err(|_| ApiError::Unavailable("Discord"))?;
-    let (account_id, session) = match attempt.account_id {
-        Some(id) => (id, None),
-        None => {
-            let identity = Identity {
-                provider: "discord",
-                subject: user.id.clone(),
-                email: user.email.clone().filter(|_| user.verified == Some(true)),
-                name: user.global_name.clone().unwrap_or_else(|| user.username.clone()),
-                avatar_url: user.avatar.as_ref().map(|hash| format!("https://cdn.discordapp.com/avatars/{}/{hash}.png", user.id)),
-            };
-            let id = auth::account_for(state, &identity).await?;
-            (id, Some(auth::open_session(state, id).await?))
-        }
-    };
     link_discord(state, account_id, &user, &guilds).await?;
     let mut return_path = attempt.return_path;
     if attempt.purpose == "install" {
         let guild_id = token.guild.as_ref().and_then(|g| g["id"].as_str()).map(str::to_owned).or_else(|| installed_guild.map(str::to_owned));
-        let Some(guild_id) = guild_id else { return Ok(DiscordDone { return_path: "/servers?install=cancelled".into(), session }) };
+        let Some(guild_id) = guild_id else { return Ok(DiscordDone { return_path: "/servers?install=cancelled".into() }) };
         let Some(guild) = guilds.iter().find(|g| g.id == guild_id && g.manageable()) else {
             return Err(ApiError::Forbidden);
         };
         guilds::installed(&state.pool, &state.hot, &guild.id, &guild.name, guild.icon.as_deref(), None, state.config.default_allowance).await?;
         return_path = format!("/servers/{guild_id}?installed=1");
     }
-    Ok(DiscordDone { return_path, session })
+    Ok(DiscordDone { return_path })
 }
 
 /// Remember this account's Discord identity and the servers it can manage.

@@ -44,26 +44,22 @@ export function Stat({ value, label }: { value: ReactNode; label: string }) {
 }
 
 /**
- * One sign-in, and it isn't here: Degen Builders keeps the accounts, this site
- * just asks it who you are. Discord stays as a second door, because linking it
- * is what proves which servers you manage.
+ * One sign-in, and it isn't here: Degen Builders keeps the accounts and signs
+ * people in with Google. Discord is not a way in — you link it afterwards,
+ * because linking is what proves which servers you manage.
  */
 export function SignIn({ returnTo = '/servers' }: { returnTo?: string }) {
   const { site } = useMe()
-  const q = `return_to=${encodeURIComponent(returnTo)}`
+  if (!site?.sso) return <p className="notice warn small">Sign-in isn't switched on yet.</p>
   return (
     <div className="stack">
-      <div className="row">
-        {site?.sso && (
-          <a className="button primary" href={signInUrl(returnTo)}>
-            Continue with {site.sso_label ?? 'Degen Builders'}
-          </a>
-        )}
-        <a className={`button${site?.sso ? '' : ' primary'}`} href={`/api/auth/discord/start?${q}`}>
-          Continue with Discord
-        </a>
-      </div>
-      {site?.sso && <p className="faint tiny">Your Degen Builders account works here. Signed in there already? You're signed in here.</p>}
+      <a className="button primary" href={signInUrl(returnTo)}>
+        Continue with {site.sso_label ?? 'Degen Builders'}
+      </a>
+      <p className="faint tiny">
+        Your {site.sso_label ?? 'Degen Builders'} account works here. Signed in there already? You're signed in here. You'll link Discord in a moment, so we can see
+        which servers you run.
+      </p>
     </div>
   )
 }
@@ -96,7 +92,7 @@ export function Shell({ children }: { children: ReactNode }) {
               </button>
             </div>
           ) : (
-            <a className="button small primary" href={site?.sso ? signInUrl('/servers') : '/api/auth/discord/start?return_to=/servers'}>
+            <a className="button small primary" href={signInUrl('/servers')}>
               Sign in
             </a>
           )}

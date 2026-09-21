@@ -96,7 +96,7 @@ struct StartQuery {
     return_to: Option<String>,
     /// For SSO: `1` never shows a sign-in screen, it only asks.
     silent: Option<String>,
-    /// For Discord: sign_in (default), connect or install.
+    /// For Discord: connect (default) or install.
     purpose: Option<String>,
 }
 
@@ -144,24 +144,30 @@ fn with_query(path: &str, pair: &str) -> String {
     if path.contains('?') { format!("{path}&{pair}") } else { format!("{path}?{pair}") }
 }
 
+fn encode(value: &str) -> String {
+    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
+}
+
+/// Linking Discord, never signing in with it: without a session this goes to
+/// the sign-in first and comes back.
 async fn discord_start(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<StartQuery>) -> ApiResult<Response> {
-    let session = auth::current(&state, &headers).await?;
-    let purpose = match (q.purpose.as_deref(), &session) {
-        (Some("install"), _) => "install",
-        (_, Some(_)) => "connect",
-        _ => "sign_in",
+    let return_to = auth::safe_return(q.return_to.as_deref().unwrap_or("/servers"));
+    let purpose = if q.purpose.as_deref() == Some("install") { "install" } else { "connect" };
+    let Some(session) = auth::current(&state, &headers).await? else {
+        let here = format!("/api/auth/discord/start?purpose={purpose}&return_to={}", encode(&return_to));
+        return Ok(redirect(&format!("/api/auth/sso/start?return_to={}", encode(&here)), vec![]));
     };
-    let started = oauth::begin_discord(&state, purpose, session.map(|s| s.account_id), q.return_to.as_deref().unwrap_or("/servers")).await?;
+    let started = oauth::begin_discord(&state, purpose, session.account_id, &return_to).await?;
     Ok(redirect(&started.url, vec![auth::oauth_cookie(&state, &started.browser)]))
 }
 
 async fn discord_callback(State(state): State<AppState>, headers: HeaderMap, Query(q): Query<CallbackQuery>) -> Response {
     let (Some(code), Some(oauth_state), None) = (q.code.as_deref(), q.state.as_deref(), q.error.as_deref()) else { return redirect("/servers?error=discord", vec![]) };
     match oauth::finish_discord(&state, &headers, code, oauth_state, q.guild_id.as_deref()).await {
-        Ok(done) => redirect(&done.return_path, done.session.map(|s| auth::session_cookies(&state, &s)).unwrap_or_default()),
+        Ok(done) => redirect(&done.return_path, vec![]),
         Err(ApiError::Forbidden) => redirect("/servers?error=not_manager", vec![]),
         Err(error) => {
-            tracing::warn!(?error, "Discord sign-in failed");
+            tracing::warn!(?error, "Linking Discord failed");
             redirect("/servers?error=discord", vec![])
         }
     }

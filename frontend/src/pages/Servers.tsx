@@ -5,7 +5,7 @@ import { useApi } from '../hooks/api'
 
 const ERRORS: Record<string, string> = {
   not_manager: "You need Manage Server in that server to add the bot to it.",
-  discord: "Discord didn't finish. Try again.",
+  discord: "Linking Discord didn't finish. Try again.",
 }
 
 export function ServersPage() {

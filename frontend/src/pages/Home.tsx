@@ -3,8 +3,8 @@ import { Loading, SignIn } from '../components/ui'
 import { useHandingOff, useMe } from '../hooks/api'
 
 const ERRORS: Record<string, string> = {
-  discord: "Discord sign-in didn't finish. Try again.",
-  sso: "Degen Builders sign-in didn't finish. Try again.",
+  discord: "Linking Discord didn't finish. Try again.",
+  sso: "Sign-in didn't finish. Try again.",
 }
 
 export function HomePage() {

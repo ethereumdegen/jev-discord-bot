@@ -12,6 +12,8 @@ export DATABASE_URL="${DATABASE_URL:-postgres://127.0.0.1:5432/degen_guard_dev}"
 export REDIS_URL="${REDIS_URL:-redis://127.0.0.1:6391}"
 export DISCORD_CLIENT_ID=local DISCORD_CLIENT_SECRET=local DISCORD_BOT_TOKEN=local
 export DISCORD_API_BASE=http://127.0.0.1:3121/api/v10 DISCORD_AUTHORIZE_BASE=http://127.0.0.1:3121
+# Signing in is Degen Builders' job, so locally the stand-in plays it too.
+export SSO_BASE_URL=http://127.0.0.1:3121 SSO_CLIENT_ID=local SSO_CLIENT_SECRET=local SSO_LABEL="Degen Builders"
 if [ -z "${TYPESAFE_API_KEY:-}" ]; then export TYPESAFE_API_KEY=local TYPESAFE_ENDPOINT=http://127.0.0.1:3121/jev; fi
 export OPERATOR_EMAILS="${OPERATOR_EMAILS:-dev@example.com}"
 redis-server --port 6391 --save "" --appendonly no --daemonize yes >/dev/null

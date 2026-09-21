@@ -35,9 +35,10 @@ npm --prefix frontend install && npm --prefix frontend run build
 scripts/dev.sh
 ```
 
-Open http://localhost:3120 and **Continue with Discord**: a local stand-in signs you in as
-`localdev`, who manages "Local Builders" and is the operator. Add the bot, then play messages
-into it as if someone typed them in Discord:
+Open http://localhost:3120 and **Continue with Degen Builders**: a local stand-in plays that
+site's sign-in and signs you in as `localdev` (dev@example.com, the operator). Then **Connect
+Discord** — that's what says which servers you run — add the bot, and play messages into it as
+if someone typed them in Discord:
 
 ```bash
 scripts/say.sh 5001 "FREE NITRO claim at https://gift.example"

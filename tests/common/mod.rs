@@ -383,3 +383,8 @@ pub fn discord_user(stubs: &Stubs, id: &str, email: &str, guilds: Value) {
     stubs.set("me", json!({ "id": id, "username": format!("user{id}"), "global_name": null, "email": email, "verified": true, "avatar": null }));
     stubs.set("guilds", guilds);
 }
+
+/// Who degenbuilders.com says is signing in: the only way into this site.
+pub fn builders_user(stubs: &Stubs, subject: &str, email: &str, handle: &str) {
+    stubs.set("builders_user", json!({ "subject": subject, "email": email, "handle": handle, "avatar_url": null }));
+}
