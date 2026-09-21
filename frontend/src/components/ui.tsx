@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { Link, NavLink } from 'react-router-dom'
-import { signInUrl, stopSigningInSilently, useAction, useMe, useSingleSignOn } from '../hooks/api'
+import { HandingOff, signInUrl, stopSigningInSilently, useAction, useHandingOff, useMe, useSingleSignOn } from '../hooks/api'
 
 export function Loading() {
   return (
@@ -70,7 +70,7 @@ export function SignIn({ returnTo = '/servers' }: { returnTo?: string }) {
 
 export function Shell({ children }: { children: ReactNode }) {
   const { account, site } = useMe()
-  useSingleSignOn()
+  const handingOff = useSingleSignOn()
   const logout = useAction<void>('POST', '/auth/logout', {
     onSuccess: () => {
       stopSigningInSilently()
@@ -78,7 +78,7 @@ export function Shell({ children }: { children: ReactNode }) {
     },
   })
   return (
-    <>
+    <HandingOff.Provider value={handingOff}>
       <header className="site-header">
         <div className="page">
           <Link to="/" className="logo">
@@ -109,13 +109,14 @@ export function Shell({ children }: { children: ReactNode }) {
           <a href="https://degenbuilders.com">degenbuilders.com</a>
         </div>
       </footer>
-    </>
+    </HandingOff.Provider>
   )
 }
 
 export function RequireAccount({ children }: { children: ReactNode }) {
   const { account, isLoading } = useMe()
-  if (isLoading) return <Loading />
+  const handingOff = useHandingOff()
+  if (isLoading || (!account && handingOff)) return <Loading />
   if (!account)
     return (
       <div className="stack narrow">

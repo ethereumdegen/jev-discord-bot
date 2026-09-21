@@ -1,6 +1,6 @@
 import { Link, useSearchParams } from 'react-router-dom'
-import { SignIn } from '../components/ui'
-import { useMe } from '../hooks/api'
+import { Loading, SignIn } from '../components/ui'
+import { useHandingOff, useMe } from '../hooks/api'
 
 const ERRORS: Record<string, string> = {
   discord: "Discord sign-in didn't finish. Try again.",
@@ -9,6 +9,7 @@ const ERRORS: Record<string, string> = {
 
 export function HomePage() {
   const { account } = useMe()
+  const handingOff = useHandingOff()
   const [params] = useSearchParams()
   const error = params.get('error')
   return (
@@ -25,6 +26,8 @@ export function HomePage() {
           <Link className="button primary big" to="/servers">
             Your servers
           </Link>
+        ) : handingOff ? (
+          <Loading />
         ) : (
           <SignIn />
         )}
