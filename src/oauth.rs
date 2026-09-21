@@ -190,7 +190,17 @@ pub async fn finish_discord(state: &AppState, headers: &HeaderMap, code: &str, o
 /// Remember this account's Discord identity and the servers it can manage.
 async fn link_discord(state: &AppState, account_id: Uuid, user: &User, guilds: &[PartialGuild]) -> ApiResult<()> {
     let mut tx = state.pool.begin().await?;
-    // A Discord account belongs to one of our accounts; linking it here moves it.
+    // A Discord account belongs to one of our accounts; linking it here moves
+    // it, and the servers it proved move with it: whoever held this identity
+    // before stops being their manager the moment it leaves them.
+    sqlx::query(
+        "DELETE FROM account_guilds WHERE account_id=$1
+           OR account_id IN (SELECT account_id FROM account_identities WHERE provider='discord' AND subject=$2)",
+    )
+    .bind(account_id)
+    .bind(&user.id)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("UPDATE accounts SET discord_user_id=NULL WHERE discord_user_id=$1 AND id<>$2").bind(&user.id).bind(account_id).execute(&mut *tx).await?;
     sqlx::query("UPDATE accounts SET discord_user_id=$2,discord_username=$3 WHERE id=$1").bind(account_id).bind(&user.id).bind(&user.username).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO account_identities(provider,subject,account_id) VALUES('discord',$1,$2) ON CONFLICT(provider,subject) DO UPDATE SET account_id=excluded.account_id")
@@ -198,7 +208,6 @@ async fn link_discord(state: &AppState, account_id: Uuid, user: &User, guilds: &
         .bind(account_id)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("DELETE FROM account_guilds WHERE account_id=$1").bind(account_id).execute(&mut *tx).await?;
     for guild in guilds.iter().filter(|g| g.manageable()) {
         sqlx::query("INSERT INTO account_guilds(account_id,guild_id,name,icon,owner) VALUES($1,$2,$3,$4,$5)")
             .bind(account_id)

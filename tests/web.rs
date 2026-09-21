@@ -125,6 +125,35 @@ async fn nobody_manages_a_server_they_dont_run() {
     assert_eq!(op.get("/api/servers/g1").await.json()["month"]["allowance"], 250000);
 }
 
+/// One Discord account proves one person's servers, so when it moves to
+/// another account here the servers move with it: the account it left is not
+/// a manager any more.
+#[tokio::test]
+async fn a_discord_account_takes_its_servers_when_it_moves() {
+    let (w, stubs) = world().await;
+    let s = &w.state;
+    w.install("g1", "111").await;
+    discord_user(&stubs, "111", "alice@example.com", json!([{ "id": "g1", "name": "Builders", "icon": null, "owner": true, "permissions": "0" }]));
+
+    // Signed in with Discord alone: that account manages g1.
+    let discord_only = Browser::new(s);
+    discord_only.discord("sign_in", "code-a").await;
+    assert_eq!(discord_only.get("/api/servers/g1").await.status, StatusCode::OK);
+
+    // The same Discord account is then connected to a Degen Builders account,
+    // which is someone else as far as this site can tell: another email.
+    let builders = Browser::new(s);
+    builders.sso("/servers", false).await;
+    builders.discord("connect", "code-b").await;
+    assert_eq!(builders.get("/api/servers/g1").await.status, StatusCode::OK);
+
+    // The account it left manages nothing now, though its session still works.
+    assert_eq!(discord_only.get("/api/me").await.json()["authenticated"], true);
+    assert_eq!(discord_only.get("/api/servers/g1").await.status, StatusCode::FORBIDDEN);
+    assert_eq!(discord_only.patch("/api/servers/g1", json!({ "mode": "enforce" })).await.status, StatusCode::FORBIDDEN);
+    assert_eq!(discord_only.get("/api/servers").await.json()["servers"].as_array().unwrap().len(), 0);
+}
+
 /// Signing in is degenbuilders.com's job: the browser carries a code back here,
 /// we swap it for the identity over the back channel, and this site opens its
 /// own session. A silent check signs you in the moment you land, and says so

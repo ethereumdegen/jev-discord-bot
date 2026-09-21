@@ -210,7 +210,11 @@ impl Discord {
             if install {
                 q.append_pair("scope", "bot applications.commands identify guilds").append_pair("permissions", &BOT_PERMISSIONS.to_string());
             } else {
-                q.append_pair("scope", "identify email guilds").append_pair("prompt", "none");
+                // No `prompt=none`: this round trip exists to prove *which*
+                // Discord account you are, so Discord shows the screen (and
+                // its account switcher) instead of silently answering with
+                // whoever this browser happens to be logged in as.
+                q.append_pair("scope", "identify email guilds");
             }
         }
         url.into()

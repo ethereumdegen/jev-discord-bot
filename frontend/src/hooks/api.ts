@@ -16,43 +16,57 @@ export function useMe() {
 /** Where the sign-in lives: degenbuilders.com, through the hand-off. */
 export const signInUrl = (returnTo: string) => `/api/auth/sso/start?return_to=${encodeURIComponent(returnTo)}`
 
-const TRIED = 'dg_sso_tried'
+/** Asked silently already, in this tab. */
+const ASKED = 'dg_sso_asked'
+/** Signed out here, deliberately: sticks until the next deliberate sign-in. */
+const SIGNED_OUT = 'dg_signed_out'
 
-/** Signing out has to stick: don't silently sign back in this tab. */
-export const stopSigningInSilently = () => sessionStorage.setItem(TRIED, '1')
+/** Signing out has to stick, and a tab is not where that belongs: a new tab
+ *  would silently sign the same browser straight back in. */
+export const stopSigningInSilently = () => {
+  localStorage.setItem(SIGNED_OUT, '1')
+  sessionStorage.setItem(ASKED, '1')
+}
 
 /** Could this page still be about to hand off? Read before the first paint, so
  *  a sign-in screen never flashes in front of a redirect. */
-const handoffPossible = () => !sessionStorage.getItem(TRIED) && new URL(window.location.href).searchParams.get('sso') !== 'none'
+const handoffPossible = () =>
+  !localStorage.getItem(SIGNED_OUT) && !sessionStorage.getItem(ASKED) && new URL(window.location.href).searchParams.get('sso') !== 'none'
 
 /**
  * Signed in at degenbuilders.com? Then you're signed in here. Once per tab we
  * ask silently; if nobody is signed in there we come back marked `sso=none`
- * and leave it alone until the next tab. Returns whether a hand-off is coming,
- * so the page can wait rather than offer a sign-in it's about to skip.
+ * and leave it alone until the next tab. Signing out here stops the asking
+ * for good, until someone signs in again. Returns whether a hand-off is
+ * coming, so the page can wait rather than offer a sign-in it's about to skip.
  */
 export function useSingleSignOn() {
   const { account, site, isLoading } = useMe()
   const [handingOff, setHandingOff] = useState(handoffPossible)
   useEffect(() => {
     if (isLoading) return
+    if (account) {
+      // Signed in again: silent hand-offs are welcome from here on.
+      localStorage.removeItem(SIGNED_OUT)
+    }
     if (account || !site?.sso) {
       setHandingOff(false)
       return
     }
     const url = new URL(window.location.href)
     if (url.searchParams.get('sso') === 'none') {
-      // Back from a silent ask: nobody is signed in over there. Tidy the mark away.
-      stopSigningInSilently()
+      // Back from a silent ask: nobody is signed in over there. It was asked,
+      // but nobody signed out — only the tab's mark belongs here.
+      sessionStorage.setItem(ASKED, '1')
       window.history.replaceState(null, '', url.pathname + url.search.replace(/[?&]sso=none/, '').replace(/^&/, '?') + url.hash)
       setHandingOff(false)
       return
     }
-    if (sessionStorage.getItem(TRIED)) {
+    if (sessionStorage.getItem(ASKED) || localStorage.getItem(SIGNED_OUT)) {
       setHandingOff(false)
       return
     }
-    stopSigningInSilently()
+    sessionStorage.setItem(ASKED, '1')
     setHandingOff(true)
     window.location.replace(`${signInUrl(url.pathname + url.search)}&silent=1`)
   }, [account, site?.sso, isLoading])
